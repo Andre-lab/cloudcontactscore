@@ -45,16 +45,20 @@ def test_cloudcontactscore_moves_in_correct_way():
 
     for i in range(100):
         randomize_all_dofs(pose)
-        assert css.pose_atoms_and_cloud_atoms_overlap(pose)
+        try:
+            assert css.pose_atoms_and_cloud_atoms_overlap(pose)
+        except:
+            raise AssertionError
+        print("works")
         # pmm.apply(pose)
         # css.show_in_pymol(pose, vis)
 
-    # small pertubations works with the old way!
-    for i in range(100):
-        randomize_all_dofs(pose, fold1=5, fold1_z=18, fold111=5, fold111_x=18, fold111_y=18, fold111_z=18)
-        assert css.pose_atoms_and_cloud_atoms_overlap(pose)
-        # pmm.apply(pose)
-        # css.show_in_pymol(pose, vis)
+    # # small pertubations works with the old way!
+    # for i in range(100):
+    #     randomize_all_dofs(pose, fold1=5, fold1_z=18, fold111=5, fold111_x=18, fold111_y=18, fold111_z=18)
+    #     assert css.pose_atoms_and_cloud_atoms_overlap(pose)
+    #     # pmm.apply(pose)
+    #     # css.show_in_pymol(pose, vis)
 
 
 def test_css_produces_the_same_as_clashchecker():

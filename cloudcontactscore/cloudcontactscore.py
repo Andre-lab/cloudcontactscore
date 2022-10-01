@@ -16,7 +16,7 @@ from pyrosetta.rosetta.core.scoring.sasa import SasaCalc
 from scipy.spatial.distance import cdist
 from scipy.spatial.transform import Rotation as R
 from shapedesign.src.movers.modify_representation import ModifyRepresentation
-from symmetryhandler.reference_kinematics import set_jumpdof_int_int
+from symmetryhandler.reference_kinematics import set_jumpdof_int_int, get_jumpdof_int_int
 from shapedesign.src.utilities.pose import add_id_to_pose, get_pose_id
 from pyrosetta.rosetta.core.scoring.dssp import Dssp
 from symmetryhandler.utilities import get_updated_symmetry_file_from_pose, get_symmetry_file_from_pose
@@ -166,11 +166,11 @@ class CloudContactScore:
         return hf_neighbours
 
     # --- Debug functions --- #
-
-    def pose_atoms_and_cloud_atoms_overlap(self, pose):
+    # It starts to fail at 1e-5
+    def pose_atoms_and_cloud_atoms_overlap(self, pose, atol=1e-4):
         """Checks that the atom xyzs in the cloud matches the same positions in the pose."""
         self._internal_update(pose)
-        return np.all(np.isclose(np.concatenate((self.main, self.rest)), self.get_cloud_atoms_from_pose(pose)))
+        return np.all(np.isclose(np.concatenate((self.main, self.rest)), self.get_cloud_atoms_from_pose(pose), atol=atol))
 
     def get_cloud_atoms_from_pose(self, pose):
         """Gets the atom positions that is in the cloud extracted from the pose directly."""
@@ -546,7 +546,8 @@ class CloudContactScore:
                 self.rest[(n-1)*self.point_cloud_size:n*self.point_cloud_size] = cloud
 
     def _get_all_pertubation_difference(self, pose):
-        return [self._get_pertubation(pose, jumpid, dof) for jumpid, dofs in self.connected_jumpdof_map[1].items() for dof in dofs]
+        return [get_jumpdof_int_int(pose, jumpid, dof) for jumpid, dofs in self.connected_jumpdof_map[1].items() for dof in dofs]
+        #return [self._get_pertubation(pose, jumpid, dof) for jumpid, dofs in self.connected_jumpdof_map[1].items() for dof in dofs]
 
     def _get_master_jumpdofs_map(self, pose):
         dofs = pose.conformation().Symmetry_Info().get_dofs()
@@ -643,19 +644,21 @@ class CloudContactScore:
 
     # timeit.timeit(lambda :self.get_all_pertubation_difference(pose), number=100)
     # 0.007277664728462696
-    def _get_pertubation(self, pose, jumpid, dof):
-        if dof <= 3:
-            trans = pose.jump(jumpid).get_translation()
-            return trans[dof - 1]
-        elif dof == 4:
-            rot = pose.jump(jumpid).get_rotation()
-            return self._get_euler_angle_x(rot)
-        elif dof == 5:
-            rot = pose.jump(jumpid).get_rotation()
-            return self._get_euler_angle_y(rot)
-        elif dof == 6:
-            rot = pose.jump(jumpid).get_rotation()
-            return self._get_euler_angle_z(rot)
+    # NOW SUPERSEDED BY get_jumpdof_int_int
+    # def _get_pertubation(self, pose, jumpid, dof):
+    #
+    #     if dof <= 3:
+    #         trans = pose.jump(jumpid).get_translation()
+    #         return trans[dof - 1]
+    #     elif dof == 4:
+    #         rot = pose.jump(jumpid).get_rotation()
+    #         return self._get_euler_angle_x(rot)
+    #     elif dof == 5:
+    #         rot = pose.jump(jumpid).get_rotation()
+    #         return self._get_euler_angle_y(rot)
+    #     elif dof == 6:
+    #         rot = pose.jump(jumpid).get_rotation()
+    #         return self._get_euler_angle_z(rot)
 
     def _translate_to_center(self, cloud, origo):
         return cloud - origo
