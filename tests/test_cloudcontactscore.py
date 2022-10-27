@@ -15,13 +15,23 @@
 #     perturb_jumpdof(pose, "JUMP5fold1", 5, next(c))
 #     score(pose)
 
+def test_css_on_6jja():
+    from cloudcontactscore.cloudcontactscore import CloudContactScore
+    from shapedesign.src.visualization.visualizer import Visualizer
+    from simpletestlib.test import setup_test
+    pose, pmm, cmd, symdef = setup_test(name="I", file="6JJA", return_symmetry_file=True, mute=True)
+    css = CloudContactScore(pose, symdef=symdef, atom_selection="surface", use_atoms_beyond_CB=False)
+    score_css = css.score(pose)
+    css.show_in_pymol(pose, Visualizer())
+    assert score_css > 1
+
 def test_css_score():
     from cloudcontactscore.cloudcontactscore import CloudContactScore
     from simpletestlib.test import setup_test
     pose, pmm, cmd, symdef = setup_test(name="I", file="1STM", return_symmetry_file=True, mute=False)
     css = CloudContactScore(pose)
     score_css = css.score(pose)
-    assert score < 0
+    assert score_css < 0
 
 def test_css_other():
     from cloudcontactscore.cloudcontactscore import CloudContactScore
@@ -198,7 +208,7 @@ def test_cloudcontactscore_for_4mer():
     #     css.show_in_pymol(pose, dict_to_visualizer={"name": f"combo{i}", "reinitialize": False})
 
 def test_cloudcontactscore():
-    from shapedesign.src.scoring.cloudcontactscore import CloudContactScore
+    from cloudcontactscore.cloudcontactscore import CloudContactScore
     from shapedesign.src.utilities.tests import setup_test
     pose, pmm, cmd, symdef = setup_test(name="4v4m", return_symmetry_file=True, mute=True)
     css = CloudContactScore(pose, jump_apply_order=['JUMP5fold1', 'JUMP5fold111', 'JUMP5fold1111'],
@@ -208,7 +218,7 @@ def test_cloudcontactscore():
 
 def test_we_have_low_energies():
     from shapedesign.benchmark.src.prepare_benchmark import get_benchmark_proteins
-    from shapedesign.src.scoring.cloudcontactscore import CloudContactScore
+    from cloudcontactscore.cloudcontactscore import CloudContactScore
     from shapedesign.src.utilities.tests import setup_test
     from shapedesign.benchmark.src.benchmarkhandler import BenchmarkHandler
     from pathlib import Path
@@ -257,7 +267,7 @@ def make_mc_mover(pose, symdef):
 
 def test_we_cant_find_other_low_energies_around_native_states():
     from shapedesign.benchmark.src.prepare_benchmark import get_benchmark_proteins
-    from shapedesign.src.scoring.cloudcontactscore import CloudContactScore
+    from cloudcontactscore.cloudcontactscore import CloudContactScore
     from shapedesign.src.utilities.tests import setup_test
     from shapedesign.src.utilities.pose import CA_rmsd_without_alignment
     proteins = get_benchmark_proteins()[0]  # recovery inputs
@@ -272,7 +282,7 @@ def test_we_cant_find_other_low_energies_around_native_states():
         assert rmsd < 0.1
 
 def test_cloudcontactscore_moves():
-    from shapedesign.src.scoring.cloudcontactscore import CloudContactScore
+    from cloudcontactscore.cloudcontactscore import CloudContactScore
     from shapedesign.src.utilities.tests import setup_test
     pose, pmm, cmd, symdef = setup_test(name="4v4m", return_symmetry_file=True, mute=True)
     css = CloudContactScore(pose, symdef, jump_apply_order = ["JUMP5fold1", "JUMP5fold111", "JUMP5fold1111"],
