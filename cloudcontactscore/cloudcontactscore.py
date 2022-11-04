@@ -6,6 +6,10 @@ CloudContactScore class
 @Date: 12/6/21
 """
 import math
+from pyrosetta.rosetta.core.scoring import ScoreFunctionFactory, ScoreTypeManager
+# FIXME: delete before release vvvvv
+from shapedesign.src.movers.modify_representation import ModifyRepresentation
+# FIXME: delete before release ^^^^^
 import numpy as np
 from io import StringIO
 from itertools import cycle
@@ -14,7 +18,6 @@ from pyrosetta.rosetta.core.pose.symmetry import sym_dof_jump_num, jump_num_sym_
 from pyrosetta.rosetta.core.scoring.sasa import SasaCalc
 from scipy.spatial.distance import cdist
 from scipy.spatial.transform import Rotation as R
-from shapedesign.src.movers.modify_representation import ModifyRepresentation
 from symmetryhandler.reference_kinematics import set_jumpdof_int_int, get_jumpdof_int_int
 from pyrosetta.rosetta.core.scoring.dssp import Dssp
 from symmetryhandler.utilities import get_updated_symmetry_file_from_pose, get_symmetry_file_from_pose
@@ -32,8 +35,8 @@ class CloudContactScore:
 
     General
     -----------------------------
-    CloudContactScore is meant to be used on Rosetta Pose objects but do not inherit from the ScoreFunction class in Rosetta and can
-    therefor not be used as in place of regular Rosetta score functions. All the features of the CloudContactScore score function is set
+    CloudContactScore is meant to be used on Rosetta Pose objects but does not inherit from the ScoreFunction class in Rosetta and can
+    therefor not be used in place of a regular Rosetta score function. All the features of the CloudContactScore score function is set
     during the initialization of it (see __init__ below). Following this, each invocation of the 'score' method will calculate the score
     of the symmetrical pose.
 
@@ -85,14 +88,20 @@ class CloudContactScore:
 
     Recommendations
     -----------------------------
-    When doing docking use use_atoms_beyond_CB=False and when doing design use use_atoms_beyond_CB=True. If False, this removes any
+    For docking:
+    use_atoms_beyond_CB=False  *This removes any rotamer information from the pose.
+    use_neighbour_ss=False
+
+    For design:
+    use_atoms_beyond_CB=True
+    use_neighbour_ss=True
+
     rotamer information from the pose. This is not good for docking as we want to explore alternative rotamers. This is however good for
     design, at least in the case where
-
     """
 
     def __init__(self, pose, atom_selection="surface", clash_dist: dict = None, neighbour_dist=12, no_clash=1.2,
-                 use_neighbour_anchorage=True, use_neighbour_ss=False, apply_symmetry_to_score=True, clash_penalty=100000,
+                 use_neighbour_anchorage=True, use_neighbour_ss=True, apply_symmetry_to_score=True, clash_penalty=100000,
                  use_hbonds=True, interaction_bonus: dict = None, lj_overlap=20, use_atoms_beyond_CB=True, symdef=None):
         """Initialization of a CloudContactScore object.
 
@@ -138,8 +147,7 @@ class CloudContactScore:
         self.clash_penalty = clash_penalty
         self.use_hbonds = use_hbonds
         if self.use_hbonds:
-            from shapedesign.src.utilities.score import create_sfxn_from_terms
-            self.hbond_score = create_sfxn_from_terms(terms =("hbond_sr_bb", "hbond_lr_bb"), weights=(1, 1))
+            self.hbond_score = self._create_hbonds_scores()
         assert atom_selection in ("surface", "all", "core")
         # creating point cloud
         self.atom_selection = atom_selection
@@ -308,6 +316,14 @@ class CloudContactScore:
 
 # --- internal/private functions that does stuff under the hood --- #
 
+    def _create_hbonds_scores(self):
+        scorefxn = ScoreFunctionFactory.create_score_function("empty")
+        terms, weights = ("hbond_sr_bb", "hbond_lr_bb"), (1, 1)
+        for term, weight in zip(terms, weights):
+            scoretype = ScoreTypeManager().score_type_from_name(term)
+            scorefxn.set_weight(scoretype, weight)
+        return scorefxn
+
     def _internal_update(self, pose):
         self._apply_symmetry_to_point_cloud(pose)
         self._store_distances()
@@ -416,7 +432,7 @@ class CloudContactScore:
                         rjr = pose.residue(rj)
                         for aj in ajj:
                             neighbour_row.append(self._is_neighbour_interaction(rir, ai, rjr, aj))
-                            no_row.append(self._is_donor_acceptor_pair(pose, rir, ai, rjr, aj))
+                            no_row.append(self._is_donor_acceptor_pair(rir, ai, rjr, aj))
                             hf_row.append(self._assign_to_hf(chain))
                 neighbour.append(neighbour_row)
                 no.append(no_row)
@@ -432,12 +448,12 @@ class CloudContactScore:
         G or CB atom any other residue."""
         return ((rir.name1() == "G" and ai == 2) or ai == 5) and ((rjr.name1() == "G" and aj == 2) or aj == 5)
 
-    def _is_donor_acceptor_pair(self, pose, rir, ai, rjr, aj):
+    def _is_donor_acceptor_pair(self, rir, ai, rjr, aj):
         ai_donor = rir.type().atom_type(ai).is_donor()
         ai_acceptor = rir.type().atom_type(ai).is_acceptor()
         aj_donor = rjr.type().atom_type(aj).is_donor()
         aj_acceptor = rjr.type().atom_type(aj).is_acceptor()
-        return (ai_donor and aj_acceptor) or (ai_acceptor  and aj_donor)
+        return (ai_donor and aj_acceptor) or (ai_acceptor and aj_donor)
 
     def _create_clash_limit_matrix(self):
         ri_ai_map = self.sym_ri_ai_map[1]

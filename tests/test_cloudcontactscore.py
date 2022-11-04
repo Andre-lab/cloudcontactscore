@@ -1,41 +1,34 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-[Documentation]
+Tests for CloudContactScore
 @Author: Mads Jeppesen
 @Date: 12/6/21
 """
-# we want a left handed and right handed
 
-def test_css_on_T_1MOG():
+def test_CloudContactScore():
     from cloudcontactscore.cloudcontactscore import CloudContactScore
-    from shapedesign.src.visualization.visualizer import Visualizer
     from simpletestlib.test import setup_test
-    pose, pmm, cmd, symdef = setup_test(name="T", file="1MOG", return_symmetry_file=True, mute=True)
-    css = CloudContactScore(pose, symdef=symdef, atom_selection="surface", use_atoms_beyond_CB=False)
-    score_css = css.score(pose)
-    css.show_in_pymol(pose, Visualizer())
-    assert score_css < 0
+    from cubicsym.kinematics import randomize_all_dofs
+    from pathlib import Path
+    sym_files = {"O": ["5GU1", "3R2R", "1BG7", "1AEW", "3F36"],
+                 "T": ["1MOG", "1H0S", "7JRH", "4KIJ", "2VTY"],
+                 "I": ["1B5S", "1NQW", "6S44", "5CVZ", "1STM"]}
+    for sym, files in sym_files.items():
+        for file in files:
+            pose, pmm, cmd, symdef = setup_test(name=sym, file=file, mute=True, return_symmetry_file=True)
+            css = CloudContactScore(pose, atom_selection="surface", use_atoms_beyond_CB=False, symdef=symdef, use_neighbour_ss=False)
 
-def test_css_on_O_7NTN():
-    from cloudcontactscore.cloudcontactscore import CloudContactScore
-    from shapedesign.src.visualization.visualizer import Visualizer
-    from simpletestlib.test import setup_test
-    pose, pmm, cmd, symdef = setup_test(name="O", file="7NTN", return_symmetry_file=True, mute=True, reinitialize=False)
-    css = CloudContactScore(pose, symdef=symdef, atom_selection="surface", use_atoms_beyond_CB=False)
-    score_css = css.score(pose)
-    css.show_in_pymol(pose, Visualizer())
-    assert score_css < 0
+            # TEST 1: test that the point cloud follows the pose as it changes to new positions
+            #css.show_in_pymol(pose, Visualizer())
+            for i in range(10):
+                randomize_all_dofs(pose)
+                try:
+                    assert css.pose_atoms_and_cloud_atoms_overlap(pose)
+                except:
+                    raise AssertionError
+            print(sym, file, "OK!")
 
-def test_css_on_I_6JJA():
-    from cloudcontactscore.cloudcontactscore import CloudContactScore
-    from shapedesign.src.visualization.visualizer import Visualizer
-    from simpletestlib.test import setup_test
-    pose, pmm, cmd, symdef = setup_test(name="I", file="6JJA", return_symmetry_file=True, mute=True)
-    css = CloudContactScore(pose, symdf=symdef, atom_selection="surface", use_atoms_beyond_CB=False)
-    score_css = css.score(pose)
-    css.show_in_pymol(pose, Visualizer())
-    assert score_css > 1
 
 def test_css_score():
     from cloudcontactscore.cloudcontactscore import CloudContactScore
@@ -49,46 +42,17 @@ def test_css_other():
     from cloudcontactscore.cloudcontactscore import CloudContactScore
     from simpletestlib.test import setup_test
     pose, pmm, cmd, symdef = setup_test(name="I", file="1STM", return_symmetry_file=True, mute=False)
-    css = CloudContactScore(pose, symdef)
+    css = CloudContactScore(pose, symdef=symdef)
     score_css = css.score(pose)
     hf_n = css.hf_neighbours()
     n_clashes = css._compute_clashes()
-    ...
-
-def test_cloudcontactscore_moves_in_correct_way():
-    from cloudcontactscore.cloudcontactscore import CloudContactScore
-    from simpletestlib.test import setup_test
-    from symmetryhandler.kinematics import randomize_all_dofs
-    from shapedesign.src.visualization.visualizer import Visualizer
-    pose, pmm, cmd, symdef = setup_test(name="I", file="1STM", return_symmetry_file=True, mute=False)
-    vis = Visualizer()
-    css = CloudContactScore(pose, symdef)
-    css._internal_update(pose)
-
-    for i in range(100):
-        randomize_all_dofs(pose)
-        try:
-            assert css.pose_atoms_and_cloud_atoms_overlap(pose)
-        except:
-            raise AssertionError
-        print("works")
-        # pmm.apply(pose)
-        # css.show_in_pymol(pose, vis)
-
-    # # small pertubations works with the old way!
-    # for i in range(100):
-    #     randomize_all_dofs(pose, fold1=5, fold1_z=18, fold111=5, fold111_x=18, fold111_y=18, fold111_z=18)
-    #     assert css.pose_atoms_and_cloud_atoms_overlap(pose)
-    #     # pmm.apply(pose)
-    #     # css.show_in_pymol(pose, vis)
-
 
 def test_css_produces_the_same_as_clashchecker():
     from shapedesign.src.movers.clashchecker import ClashChecker
     from cloudcontactscore.cloudcontactscore import CloudContactScore
     from simpletestlib.test import setup_test
     pose, pmm, cmd, symdef = setup_test(name="I", file="1STM", return_symmetry_file=True, mute=True)
-    css = CloudContactScore(pose, use_hbonds=False) #jump_apply_order=['JUMPHFfold1', 'JUMPHFfold111', 'JUMPHFfold111_z'],
+    css = CloudContactScore(pose, use_hbonds=False)  #jump_apply_order=['JUMPHFfold1', 'JUMPHFfold111', 'JUMPHFfold111_z'],
                             # jump_connect_to_chain = "JUMP5fold111_z")
 
     clc = ClashChecker(pose)
@@ -100,7 +64,7 @@ def test_cloudcontactscore_time():
     from cloudcontactscore.cloudcontactscore import CloudContactScore
     from shapedesign.src.utilities.tests import setup_test
     pose, pmm, cmd, symdef = setup_test(name="4v4m", return_symmetry_file=True, mute=True)
-    print("construction time:",  timeit.timeit(lambda: CloudContactScore(pose), number=1) / 1) # around 15 ms
+    print("construction time:", timeit.timeit(lambda: CloudContactScore(pose), number=1) / 1) # around 15 ms
     css = CloudContactScore(pose)
     print("score time:", timeit.timeit(lambda: css.score(pose), number=100) / 100) # around 15 ms
 
@@ -286,7 +250,7 @@ def test_we_cant_find_other_low_energies_around_native_states():
     for protein in proteins:
         # pose, pmm, cmd, symdef = setup_test(name=protein, return_symmetry_file=True, mute=True, pymol=False)
         pose, symdef = setup_test(name=protein, return_symmetry_file=True, mute=True, pymol=False)
-        css = CloudContactScore(pose, symdef)
+        css = CloudContactScore(pose, symdef=symdef)
         rnm, mcm = make_mc_mover(pose, symdef)
         init_pose = pose.clone()
         mcm.apply(pose)
@@ -297,9 +261,8 @@ def test_cloudcontactscore_moves():
     from cloudcontactscore.cloudcontactscore import CloudContactScore
     from shapedesign.src.utilities.tests import setup_test
     pose, pmm, cmd, symdef = setup_test(name="4v4m", return_symmetry_file=True, mute=True)
-    css = CloudContactScore(pose, symdef, jump_apply_order = ["JUMP5fold1", "JUMP5fold111", "JUMP5fold1111"],
-                                                                   jump_connect_to_chain= "JUMP5fold1111_subunit",
-                                                                   chain_ids_in_use = [1, 2, 3, 8, 7, 6])
+    css = CloudContactScore(pose, jump_apply_order=["JUMP5fold1", "JUMP5fold111", "JUMP5fold1111"],
+                            jump_connect_to_chain="JUMP5fold1111_subunit", chain_ids_in_use=[1, 2, 3, 8, 7, 6], symdef=symdef)
     css.show_in_pymol(pose, show_clashes=False, dict_to_visualizer = {"name": "css_before", "reinitialize": True,
                                                 "store_scenes":False, "store_states":True, "representation":["cartoon", "sticks"]})
     # ['JUMP5fold1111', 'JUMP5fold111', 'JUMP5fold1']
