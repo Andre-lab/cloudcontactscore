@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-class:  CloudContactScore
+CloudContactScore class
 @Author: Mads Jeppesen
 @Date: 12/6/21
 """
@@ -28,84 +28,110 @@ from pyrosetta.rosetta.core.select.util import calc_sc_neighbors, SelectResidues
 from cubicsym.cubicsetup import CubicSetup
 
 class CloudContactScore:
-    """Score function for fixed backbone docking or design.
+    """Fast score function for fixed backbone coarse grained docking or design of cubic symmetrical proteins.
 
-    The scorefunction has x components that either gives penaties (+) or bonuses (-) to the score:
+    General
+    -----------------------------
+    CloudContactScore is meant to be used on Rosetta Pose objects but do not inherit from the ScoreFunction class in Rosetta and can
+    therefor not be used as in place of regular Rosetta score functions. All the features of the CloudContactScore score function is set
+    during the initialization of it (see __init__ below). Following this, each invocation of the 'score' method will calculate the score
+    of the symmetrical pose.
+
+    Usage example
+    -----------------------------
+    ccs = CloudContactScore(pose)
+    # move the pose to a new position
+    ccs.score(pose)
+
+    Details
+    -----------------------------
+    The score function has x components that either gives penalties (+) or bonuses (-) to the score:
     1. Clash penalty based on the distance between atoms.
     2. Neighbour bonus based on the distance between CB (if residue!=GLY) or CA (if residue=GLY) atoms.
-    3. Backbone hydrogen bond bonuses for correct orientation of hydrogenbonds.
-    4. """
+    3. Backbone hydrogen bond bonuses for correct orientation of hydrogen bonds.
+    4. Secondary structure interaction bonus. In DSSP terminology: L-interactions are worse than H- or E-interactions.
+    5. Anchorage interaction bonus. Residues that are anchored to the subunit (calcualted through internal interactions) gives higher bonus.
+    Each of these score term contributions can be turned on and off and their weight/behavior modified.
 
-    # LJ results for 20% overlap between the radii (*0.8 = 20%)
-    # {'CB': 1.6094080000000002, 'N': 1.4419616, 'O': 1.2324640000000002, 'CA': 1.6094080000000002, 'C': 1.5333288}
+    CloudContactScore uses a point cloud representation where each points in the cloud represents a particular portion of a protein.
+    By default (atom_selection='surface') this is the surface of protein without the present of surface side chains beyond CB atoms. This
+    cloud is stored as numpy arrays and moved around in space in relation to the internal symmetry change in a fixed backbone pose.
+    The point cloud is stored during initialization of the mover and any change to backbone of the pose afterwards will not be recognized
+    by CloudContactScore.
 
-    def __init__(self, pose, symdef=None, atom_selection="surface", clash_dist:dict=None, neighbour_dist=12, no_clash=1.2,
-                 use_neighbour_coordination=True, use_neighbour_ss=False, apply_symmetry_to_score=True, clash_penalty=100000,
-                 use_hbonds = True,  interaction_bonus:dict = None, lj_overlap=20, jump_apply_order=None, jump_connect_to_chain=None,
-                 chain_ids_in_use=None, connections: dict=None, use_atoms_beyond_CB=True):
-        ###### defaults:
-        #interaction_bonus =  {"B": 1, "C": 1, "F": 3, "H":3, "G":1} if interaction_bonus == None else interaction_bonus
-        #interaction_bonus =  {2: 1, 3: 1, 6: 3, 7:1, 8: 3} if interaction_bonus == None else interaction_bonus
-        #self.chains_in_use = ["A", "B", "C", "H", "G", "F"] # F=3-fold, H=2-fold(closest), G=2-fold   | no I (3-fold), D+E (5-fold)
-        # TODO: CHECK WHY THIS ORDER RETAINS THE OLD SCOREFUNCTION VALUES?
-        # interaction_bonus =  {2: 1, 3: 1, 8: 1, 6: 1, 7: 1} if interaction_bonus == None else interaction_bonus
-        if interaction_bonus:
-            raise NotImplementedError("THIS SHOULD BE DEPRECIATED!")
-        clash_dist = {"CB": 1.5} if clash_dist == None else clash_dist
-        #clash_dist = {"CB": 1.5} if clash_dist == None else clash_dist
-        ######
-        if jump_apply_order:
-            self.jump_apply_order = jump_apply_order
-        else: # Default for capsids
-            self.jump_apply_order = ['JUMPHFfold1', 'JUMPHFfold1_z', 'JUMPHFfold111', 'JUMPHFfold111_x', 'JUMPHFfold111_y', 'JUMPHFfold111_z']
-        # if jump_connect_to_chain:
-        #     self.jump_connected_to_chain = jump_connect_to_chain
-        # else: # Default for capsids
-        #     self.jump_connected_to_chain = "JUMPHFfold111_subunit"
-        # for script
-        # [0]: 1 = A 5-fold
-        # [0]: 2 = B 5-fold
-        # [0]: 3 = C 5-fold
-        # [0]: 6 = F 3-fold
-        # [0]: 7 = G 2-fold
-        # [0]: 8 = H 2-fold (closest)
-        # if the main chain is NOT A, it will break the scorefunction. Therefore I am transitioning to chain ids instead.
-        # self.chains_in_use = ["A", "B", "C", "H", "G", "F"] # F=3-fold, H=2-fold(closest), G=2-fold   | no I (3-fold), D+E (5-fold)
-        # if chain is B, this will be
-        # B, A, C, D, E, F, G => so 1, 2, 3, 6, 7, 8 => keep B, A, C, H, G, F, H
-        # 1, 2, 3 will always be the 5-fold. 6 is the closest3-fold, 7, 8 is the 2-folds
+    CloudContactScore can also calculate the amount of what I call 'High Fold' interactions or HF-interactions. In this definition the
+    'high folds' are the symmetry folds present in the symmetry file with the highest order. For I-symmetry it is the 5-fold and for O-symmetry
+    it is the 4-fold and so on. The interactions I refer to are the interactions between the main/master subunit and other subunits that
+    are part of the other high-folds that the main/master subunit is NOT part of. This is useful to check the connections of the cubic
+    symmetrical structures as they must connect in order for a cubic symmetrical structure to form.
+
+    Score term details
+    -----------------------------
+    1. To calculate the clash penalty between two atoms the identity of atoms and their Lennard Jones (LJ) sphere is taken into account.
+       For all non Oxygen-Nitrogen interactions (NO-interactions / potential hydrogen bond pair) a clash is detected if their LJ-sphere overlaps
+       by a set overlap percentage (20% by default). NO-interactions can get closer than this and is set ny another parameter (1.2 Å by default).
+       The penalty is given as on/off so there is no gradient involved. The LJ-sphere uses the Rosetta definition. Any heavy atoms beyond CB
+       in the side chains, including CB itself will have their clash distance set to 1.5 Å by default (originally CB ≈ 1.61) to allow the b
+       ackbones to get closer.
+    2. To calculate neighbours bonuses, each connection between CB (if residue!=GLY) or CA (if residue=GLY) between the main/master subunit
+       and opposing subunits that are within a certain distance (12 Å by default) adds -1 to the neighbour score.
+    3. The hydrogen bond score is done through the "hbond_sr_bb" and "hbond_lr_bb" score terms in Rosetta.
+    4. The secondary structure is added as a weight through the neighbour score. If the neighbour score is not turn on neither will this
+       contribution. If the potential neighbour is either E or H (in DSSP terminilogy) the neighbour score is weighted higher than if it is
+       L.
+    5. The anchorage contribution also happens through the neighbour score. If the neighbour score is not turn on neither will this
+       contribution. The higher the internal neighbour count the higher the weight of the score.
+    The total score will, if set of course, be reweighed by the E-line in the associated symmetry file as per usual in Rosetta.
+
+    Recommendations
+    -----------------------------
+    When doing docking use use_atoms_beyond_CB=False and when doing design use use_atoms_beyond_CB=True. If False, this removes any
+    rotamer information from the pose. This is not good for docking as we want to explore alternative rotamers. This is however good for
+    design, at least in the case where
+
+    """
+
+    def __init__(self, pose, atom_selection="surface", clash_dist: dict = None, neighbour_dist=12, no_clash=1.2,
+                 use_neighbour_anchorage=True, use_neighbour_ss=False, apply_symmetry_to_score=True, clash_penalty=100000,
+                 use_hbonds=True, interaction_bonus: dict = None, lj_overlap=20, use_atoms_beyond_CB=True, symdef=None):
+        """Initialization of a CloudContactScore object.
+
+        :param pose: Pose to use for scoring. CloudContactScore will use the main/master subunit to create the internal point cloud.
+        :param atom_selection: Selection method to use when selecting the point cloud. Options are 'surface', 'core' and 'all'. 'surface' is
+               highly recommend as the others are not well tested.
+        :param clash_dist: Clash distances to use instead of the default ones. 
+        :param neighbour_dist: Neighbour distance to use. If 2 atoms are within this distance they are considered neighours. 
+        :param no_clash: The Nitrogen-Oxygen clash distance to use.
+        :param use_neighbour_anchorage: Use neighbour anchorage interaction bonus in the score.
+        :param use_neighbour_ss: Use nieghour secondary structure interaction bonus in the score
+        :param apply_symmetry_to_score: Apply symmetry weights to the score.
+        :param clash_penalty: The score added to final score for each clash detected in the pose
+        :param use_hbonds: Use hydrogen bond score in the final score.
+        :param interaction_bonus: Add interaction bonuses between different subunits. Usefull if you want to design specific interactions.
+               The keys of the dictionary are the Pose chain numbers and the values the weights. Example: {2: 1, 3: 1, 6: 3, 7:1, 8: 3}
+        :param lj_overlap: LJ_overlap to use when calculating the default clash distances.
+        :param use_atoms_beyond_CB: Use atoms beyond CB in the point cloud for residues not designated as surface.
+        :param symdef: Symmetry file to use when creating a visualization of the point cloud. If you are not visualizing the point cloud
+               you can disregard this option.
+        """
+        self.jump_apply_order = ['JUMPHFfold1', 'JUMPHFfold1_z', 'JUMPHFfold111', 'JUMPHFfold111_x', 'JUMPHFfold111_y', 'JUMPHFfold111_z']
         self.symmetry_type = CubicSetup.cubic_symmetry_from_pose(pose)
         self.use_atoms_beyond_CB = use_atoms_beyond_CB
-        # TODO: CHECK WHY THIS ORDER RETAINS THE OLD SCORE VALUES
-        # hfs: high folds mapped together with the chain ids (only useful for cubic symmetry)
-        if connections:
-            self.hfs = connections
-        if chain_ids_in_use:
-            self.chain_ids_in_use = chain_ids_in_use
-        # TODO: check if these are correct for O and T
-        elif self.symmetry_type in ("I", "O"):
+        if self.symmetry_type in ("I", "O"):
             self.chain_ids_in_use = [1, 2, 3, 8, 7, 6]
-            if not connections:
-                self.hfs = {0: (2, 3), 1: (8,), 2: (7, 6)}
+            self.hfs = {0: (2, 3), 1: (8,), 2: (7, 6)}
         else:
-            # [0]: 1 = A main
-            # [0]: 2 = B HF-fold
-            # [0]: 4 = C 3-fold
-            # [0]: 6 = F 2-fold (closest)
-            # [0]: 5 = F 2-fold
             assert self.symmetry_type == "T"
             self.chain_ids_in_use = [1, 2, 4, 6, 5]
-            if not connections:
-                self.hfs = {0: (2,), 1: (4,), 2: (6, 5)}
+            self.hfs = {0: (2,), 1: (4,), 2: (6, 5)}
         self.chain_names_in_use = [pose.pdb_info().chain(pose.chain_end(i)) for i in self.chain_ids_in_use]
-        # self.chain_names_to_ids = self.map_chain_name_to_id(pose)
         self.core_atoms_str = ["CB", "N", "O", "CA", "C"]
         self.core_atoms_index = self._get_atom_indices(self.core_atoms_str)
         self.no_clash = no_clash
         self.distances = None
         self.apply_symmetry_to_score = apply_symmetry_to_score
         self.neighbour_dist = neighbour_dist
-        self.neighbour_coordination = use_neighbour_coordination
+        self.neighbour_anchorage = use_neighbour_anchorage
         self.neighbour_ss = use_neighbour_ss
         if self.neighbour_ss:
             self.dssp = Vector1(Dssp(pose).get_dssp_secstruct())
@@ -114,7 +140,7 @@ class CloudContactScore:
         if self.use_hbonds:
             from shapedesign.src.utilities.score import create_sfxn_from_terms
             self.hbond_score = create_sfxn_from_terms(terms =("hbond_sr_bb", "hbond_lr_bb"), weights=(1, 1))
-        assert atom_selection in ("surface", "surface_cone", "all", "core")
+        assert atom_selection in ("surface", "all", "core")
         # creating point cloud
         self.atom_selection = atom_selection
         self.clash_dist_str, self.clash_dist_int = self._create_default_clash_distances(pose, clash_dist=clash_dist, lj_overlap=lj_overlap)
@@ -126,7 +152,6 @@ class CloudContactScore:
         self.main = np.zeros(self.point_clouds[1].shape)
         self.rest = np.zeros((self.point_clouds[1].shape[0]*len(self.chain_ids_in_use[1:]), 3))
         self.matrix_shape = (self.main.shape[0], self.rest.shape[0])
-
         # masks and weights
         self.neighbour_mask, self.donor_acceptor_mask, self.hf_masks = self._create_masks(pose)
         self.symmetric_wt = self._create_symweigts(pose)
@@ -135,7 +160,6 @@ class CloudContactScore:
         self.masked_coordination_wt = self.coordination_wt[self.neighbour_mask]
         # other
         self.clash_limit_matrix = self._create_clash_limit_matrix()
-        # these are the highfolds, for instance for icosahedra the 3 set of 5-folds present.
 
     # --- score functions, either total or individual ones --- #
 
@@ -327,7 +351,7 @@ class CloudContactScore:
         # 1. add weights according to the anchorage of each residue on its own chain and the secondary structure type it is from
         for ri, aii in self.sym_ri_ai_map[1].items():
             wt = 1.0
-            if self.neighbour_coordination:
+            if self.neighbour_anchorage:
                 wt *= min(1.0, self._calculate_neighbours(pose, ri) / 20.0)
             if self.neighbour_ss and self.dssp[ri] == "L":
                 wt /= 3.0
@@ -429,13 +453,14 @@ class CloudContactScore:
     def _mark_surface_atoms(self, aspose, core_sasa_limit=20.0):
         """Marks only atoms on the surface.
 
-        It with classical Rosetta based layer selection with a combination of SASA and CA-CB cone neighbour detection.
+        Uses classical Rosetta based layer selection with a combination of SASA and CA-CB cone neighbour detection.
+
         The algorithm is as follows:
 
         1. Calculate SASA for all atoms in the pose. All residues with a total sasa (add up their atom sasas) of less than 20 are changed to
         ALA, except if they are already GLY.
 
-        2. FIXME: Calculate CA-CB cone for all residues. All residues with less than 2.0 CA atoms in that cone are also changed to ALA,
+        2. Calculate CA-CB cone for all residues. All residues with less than 2.0 CA atoms in that cone are also changed to ALA,
         except if they are already GLY.
 
         Step 1 and 2 are done to remove all side chain information of residues on the surface of the protein. Side chain atoms
@@ -448,8 +473,8 @@ class CloudContactScore:
         However, when doing structure predicition, we have less confidence in the rotamer, either because we use prepacking on a bound
         structure for benchmarking or we start with an unbound structure that has to conform to a bound state.
 
-        FIXME: If the user want to remove all sidechain information there's an option to include only BB + CB atoms in the final subset so that
-        no rotamer information is saved.
+        If the user want to remove all sidechain information there's an option to include only BB + CB atoms in the final subset so that
+        no rotamer information is saved. This is done by use_atoms_beyond_CB.
 
         3. This step depends on the goal of the user. If the user design/prediction
 
@@ -557,12 +582,14 @@ class CloudContactScore:
         return [i for i in range(1, natoms + 1) if residue.type().atom_type(i).is_heavyatom()]
 
     def _create_default_clash_distances(self, pose, lj_overlap=20, clash_dist=None):
+        """Create the default clash distance for each atom as 20% of the ."""
         # LJ results for 20% overlap between the radii (*0.8 = 20%)
         zip_ = zip([pose.residue(10).atom_type(x).lj_radius() for x in self.core_atoms_index], self.core_atoms_str)
         # default = {'CB': 1.6094080000000002, 'N': 1.4419616, 'O': 1.2324640000000002, 'CA': 1.6094080000000002, 'C': 1.5333288}
         default_str = {k: v * ((100 - lj_overlap)/100) for v, k in zip_}
-        default_str["SC"] = 1.5
+        # reweighing of CB and SC
         default_str["CB"] = 1.5
+        default_str["SC"] = 1.5
         # add custom
         if clash_dist:
             assert isinstance(clash_dist, dict), "clash_dist must be a dict"
@@ -570,7 +597,6 @@ class CloudContactScore:
                 default_str[k] = v
         default_int = {99: default_str["SC"]}
         default_int.update({self.core_atoms_index[self.core_atoms_str.index(k)]:v for k, v in default_str.items() if k != "SC"})
-        # add SC to both
         return default_str, default_int
 
     def _get_atom_indices(self, atoms_str):
@@ -723,11 +749,11 @@ class CloudContactScore:
         # get atoms we are interested in
         if atom_selection == "surface":
             ri_ai_map = self._mark_surface_atoms(aspose)
-        elif atom_selection == "surface_cone":
-            ri_ai_map = self._mark_surface_cone_atoms(aspose)
+        # elif atom_selection == "surface_cone":
+        #     ri_ai_map = self._mark_surface_cone_atoms(aspose)
         elif atom_selection == "core":
             ri_ai_map = self._get_all_core_atoms(aspose)
-        else: # = all
+        elif atom_selection == "all":
             ri_ai_map = self._get_all_atoms(aspose)
         # map onto all chains!
         sym_ri_ai_map = self._symmetrize_ri_ai_map(pose, aspose, ri_ai_map)
