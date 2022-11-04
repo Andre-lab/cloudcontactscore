@@ -5,22 +5,34 @@
 @Author: Mads Jeppesen
 @Date: 12/6/21
 """
-# import timeit
-# from itertools import cycle
-# from cubicsym.kinematics import perturb_jumpdof, set_jumpdof
-# from shapedesign.src.visualization.visualizer import Visualizer
+# we want a left handed and right handed
 
-# c = cycle((1, -1))
-# def move_and_apply_score(pose, score):
-#     perturb_jumpdof(pose, "JUMP5fold1", 5, next(c))
-#     score(pose)
+def test_css_on_T_1MOG():
+    from cloudcontactscore.cloudcontactscore import CloudContactScore
+    from shapedesign.src.visualization.visualizer import Visualizer
+    from simpletestlib.test import setup_test
+    pose, pmm, cmd, symdef = setup_test(name="T", file="1MOG", return_symmetry_file=True, mute=True)
+    css = CloudContactScore(pose, symdef=symdef, atom_selection="surface", use_atoms_beyond_CB=False)
+    score_css = css.score(pose)
+    css.show_in_pymol(pose, Visualizer())
+    assert score_css < 0
 
-def test_css_on_6jja():
+def test_css_on_O_7NTN():
+    from cloudcontactscore.cloudcontactscore import CloudContactScore
+    from shapedesign.src.visualization.visualizer import Visualizer
+    from simpletestlib.test import setup_test
+    pose, pmm, cmd, symdef = setup_test(name="O", file="7NTN", return_symmetry_file=True, mute=True, reinitialize=False)
+    css = CloudContactScore(pose, symdef=symdef, atom_selection="surface", use_atoms_beyond_CB=False)
+    score_css = css.score(pose)
+    css.show_in_pymol(pose, Visualizer())
+    assert score_css < 0
+
+def test_css_on_I_6JJA():
     from cloudcontactscore.cloudcontactscore import CloudContactScore
     from shapedesign.src.visualization.visualizer import Visualizer
     from simpletestlib.test import setup_test
     pose, pmm, cmd, symdef = setup_test(name="I", file="6JJA", return_symmetry_file=True, mute=True)
-    css = CloudContactScore(pose, symdef=symdef, atom_selection="surface", use_atoms_beyond_CB=False)
+    css = CloudContactScore(pose, symdf=symdef, atom_selection="surface", use_atoms_beyond_CB=False)
     score_css = css.score(pose)
     css.show_in_pymol(pose, Visualizer())
     assert score_css > 1

@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-CloudContactScore
+class:  CloudContactScore
 @Author: Mads Jeppesen
 @Date: 12/6/21
 """
@@ -9,7 +9,6 @@ import math
 import numpy as np
 from io import StringIO
 from itertools import cycle
-from pathlib import Path
 from pyrosetta import AtomID, Pose, Vector1
 from pyrosetta.rosetta.core.pose.symmetry import sym_dof_jump_num, jump_num_sym_dof, extract_asymmetric_unit
 from pyrosetta.rosetta.core.scoring.sasa import SasaCalc
@@ -17,7 +16,6 @@ from scipy.spatial.distance import cdist
 from scipy.spatial.transform import Rotation as R
 from shapedesign.src.movers.modify_representation import ModifyRepresentation
 from symmetryhandler.reference_kinematics import set_jumpdof_int_int, get_jumpdof_int_int
-from shapedesign.src.utilities.pose import add_id_to_pose, get_pose_id
 from pyrosetta.rosetta.core.scoring.dssp import Dssp
 from symmetryhandler.utilities import get_updated_symmetry_file_from_pose, get_symmetry_file_from_pose
 from symmetryhandler.reference_kinematics import set_all_dofs_to_zero
@@ -27,11 +25,16 @@ from pyrosetta.rosetta.core.select.residue_selector import LayerSelector
 from pyrosetta.rosetta.core.pack.task.operation import OperateOnResidueSubset, RestrictToRepackingRLT, PreventRepackingRLT
 from pyrosetta.rosetta.core.pack.task import TaskFactory
 from pyrosetta.rosetta.core.select.util import calc_sc_neighbors, SelectResiduesByLayer
-
-
+from cubicsym.cubicsetup import CubicSetup
 
 class CloudContactScore:
-    """Rosetta scorefunction. An evolution of ClashChecker. Usefull for fixed backbone docking or design."""
+    """Score function for fixed backbone docking or design.
+
+    The scorefunction has x components that either gives penaties (+) or bonuses (-) to the score:
+    1. Clash penalty based on the distance between atoms.
+    2. Neighbour bonus based on the distance between CB (if residue!=GLY) or CA (if residue=GLY) atoms.
+    3. Backbone hydrogen bond bonuses for correct orientation of hydrogenbonds.
+    4. """
 
     # LJ results for 20% overlap between the radii (*0.8 = 20%)
     # {'CB': 1.6094080000000002, 'N': 1.4419616, 'O': 1.2324640000000002, 'CA': 1.6094080000000002, 'C': 1.5333288}
@@ -45,7 +48,9 @@ class CloudContactScore:
         #interaction_bonus =  {2: 1, 3: 1, 6: 3, 7:1, 8: 3} if interaction_bonus == None else interaction_bonus
         #self.chains_in_use = ["A", "B", "C", "H", "G", "F"] # F=3-fold, H=2-fold(closest), G=2-fold   | no I (3-fold), D+E (5-fold)
         # TODO: CHECK WHY THIS ORDER RETAINS THE OLD SCOREFUNCTION VALUES?
-        interaction_bonus =  {2: 1, 3: 1, 8: 3, 6: 3, 7: 1} if interaction_bonus == None else interaction_bonus
+        # interaction_bonus =  {2: 1, 3: 1, 8: 1, 6: 1, 7: 1} if interaction_bonus == None else interaction_bonus
+        if interaction_bonus:
+            raise NotImplementedError("THIS SHOULD BE DEPRECIATED!")
         clash_dist = {"CB": 1.5} if clash_dist == None else clash_dist
         #clash_dist = {"CB": 1.5} if clash_dist == None else clash_dist
         ######
@@ -69,12 +74,29 @@ class CloudContactScore:
         # if chain is B, this will be
         # B, A, C, D, E, F, G => so 1, 2, 3, 6, 7, 8 => keep B, A, C, H, G, F, H
         # 1, 2, 3 will always be the 5-fold. 6 is the closest3-fold, 7, 8 is the 2-folds
+        self.symmetry_type = CubicSetup.cubic_symmetry_from_pose(pose)
         self.use_atoms_beyond_CB = use_atoms_beyond_CB
         # TODO: CHECK WHY THIS ORDER RETAINS THE OLD SCORE VALUES
+        # hfs: high folds mapped together with the chain ids (only useful for cubic symmetry)
+        if connections:
+            self.hfs = connections
         if chain_ids_in_use:
             self.chain_ids_in_use = chain_ids_in_use
-        else: # Default for capsids
+        # TODO: check if these are correct for O and T
+        elif self.symmetry_type in ("I", "O"):
             self.chain_ids_in_use = [1, 2, 3, 8, 7, 6]
+            if not connections:
+                self.hfs = {0: (2, 3), 1: (8,), 2: (7, 6)}
+        else:
+            # [0]: 1 = A main
+            # [0]: 2 = B HF-fold
+            # [0]: 4 = C 3-fold
+            # [0]: 6 = F 2-fold (closest)
+            # [0]: 5 = F 2-fold
+            assert self.symmetry_type == "T"
+            self.chain_ids_in_use = [1, 2, 4, 6, 5]
+            if not connections:
+                self.hfs = {0: (2,), 1: (4,), 2: (6, 5)}
         self.chain_names_in_use = [pose.pdb_info().chain(pose.chain_end(i)) for i in self.chain_ids_in_use]
         # self.chain_names_to_ids = self.map_chain_name_to_id(pose)
         self.core_atoms_str = ["CB", "N", "O", "CA", "C"]
@@ -91,7 +113,7 @@ class CloudContactScore:
         self.use_hbonds = use_hbonds
         if self.use_hbonds:
             from shapedesign.src.utilities.score import create_sfxn_from_terms
-            self.hbond_score = create_sfxn_from_terms(terms =("hbond_sr_bb", "hbond_lr_bb"), weights=(1,1))
+            self.hbond_score = create_sfxn_from_terms(terms =("hbond_sr_bb", "hbond_lr_bb"), weights=(1, 1))
         assert atom_selection in ("surface", "surface_cone", "all", "core")
         # creating point cloud
         self.atom_selection = atom_selection
@@ -104,11 +126,7 @@ class CloudContactScore:
         self.main = np.zeros(self.point_clouds[1].shape)
         self.rest = np.zeros((self.point_clouds[1].shape[0]*len(self.chain_ids_in_use[1:]), 3))
         self.matrix_shape = (self.main.shape[0], self.rest.shape[0])
-        # hfs: high folds mapped together with the chain ids (only useful for cubic symmetry)
-        if connections:
-            self.hfs = connections
-        else:
-            self.hfs = {0: (2, 3), 1: (8,), 2: (7, 6)}
+
         # masks and weights
         self.neighbour_mask, self.donor_acceptor_mask, self.hf_masks = self._create_masks(pose)
         self.symmetric_wt = self._create_symweigts(pose)
@@ -486,52 +504,52 @@ class CloudContactScore:
         print(f"kept atoms: {atom_size_clean}")
         return resi_atom_sasa_map_clean
 
-    def _mark_surface_cone_atoms(self, aspose):
-        """Use CA-CB cone surface selection """
-        from shapedesign.src.visualization.visualizer import Visualizer
-        for sel, typ in zip(([True, False, False], [False, True, False], [False, False, True]), ("core", "bound", "surf")):
-            srbl = SelectResiduesByLayer(*sel)
-            srbl.use_sidechain_neighbors(True)
-            srbl.sasa_core(5.2)
-            srbl.sasa_surface(2.0)
-            srbl.compute(aspose)
-            print(f"sele {typ}_res, chain A and resi {'+'.join(map(str, srbl.compute(aspose)))}")
-        from shapedesign.src.visualization.visualizer import Visualizer
-        Visualizer(reinitialize=False).send_pose(aspose, name="aspose")
-        # vec = calc_sc_neighbors(aspose)
-
-
-
-        ls_core = LayerSelector()
-        ls_core.set_layers(True, False, False)
-        ls_core.apply(aspose)
-        core = OperateOnResidueSubset(PreventRepackingRLT(), ls_core)
-        task_core = TaskFactory()
-        task_core.push_back(core)
-
-
-        ls_bound = LayerSelector()
-        ls_bound.set_layers(False, True, False) # core, boundary, surface
-        ls_bound.apply(aspose)
-
-        ls_surf = LayerSelector()
-        ls_surf.set_layers(False, False, True) # core, boundary, surface
-        ls_surf.apply(aspose)
-
-        resi_atom_sasa_map = {ri:{ai: atom_sasa.get(AtomID(ai, ri)) for ai in self._get_heavy_ai(aspose, ri)} for ri in range(1, aspose.size() + 1)}
-        atom_size_unclean = len([i for ii in [list(m.keys()) for resi, m in resi_atom_sasa_map.items()] for i in ii])
-        core_atom_size_unclean = len([i for ii in [list(m.keys()) for resi, m in resi_atom_sasa_map.items()] for i in ii if i in self.core_atoms_index])
-        # atom_sasa_arr = np.array(list(atom_sasa_map.values()))
-        # remove all atoms that have 0
-        resi_atom_sasa_map_clean = {}
-        for resi, atom_sasa_map in resi_atom_sasa_map.items():
-            resi_atom_sasa_map_clean[resi] = [atom for atom, sasa in atom_sasa_map.items() if sasa != 0]
-        # atom_sas_map
-        atom_size_clean = len([i for ii in [m for resi, m in resi_atom_sasa_map_clean.items()] for i in ii])
-        print(f"All atoms: {atom_size_unclean}")
-        print(f"{','.join(self.core_atoms_str)}: {core_atom_size_unclean}")
-        print(f"kept atoms: {atom_size_clean}")
-        return resi_atom_sasa_map_clean
+    # def _mark_surface_cone_atoms(self, aspose):
+    #     """Use CA-CB cone surface selection """
+    #     from shapedesign.src.visualization.visualizer import Visualizer
+    #     for sel, typ in zip(([True, False, False], [False, True, False], [False, False, True]), ("core", "bound", "surf")):
+    #         srbl = SelectResiduesByLayer(*sel)
+    #         srbl.use_sidechain_neighbors(True)
+    #         srbl.sasa_core(5.2)
+    #         srbl.sasa_surface(2.0)
+    #         srbl.compute(aspose)
+    #         print(f"sele {typ}_res, chain A and resi {'+'.join(map(str, srbl.compute(aspose)))}")
+    #     from shapedesign.src.visualization.visualizer import Visualizer
+    #     Visualizer(reinitialize=False).send_pose(aspose, name="aspose")
+    #     # vec = calc_sc_neighbors(aspose)
+    #
+    #
+    #
+    #     ls_core = LayerSelector()
+    #     ls_core.set_layers(True, False, False)
+    #     ls_core.apply(aspose)
+    #     core = OperateOnResidueSubset(PreventRepackingRLT(), ls_core)
+    #     task_core = TaskFactory()
+    #     task_core.push_back(core)
+    #
+    #
+    #     ls_bound = LayerSelector()
+    #     ls_bound.set_layers(False, True, False) # core, boundary, surface
+    #     ls_bound.apply(aspose)
+    #
+    #     ls_surf = LayerSelector()
+    #     ls_surf.set_layers(False, False, True) # core, boundary, surface
+    #     ls_surf.apply(aspose)
+    #
+    #     resi_atom_sasa_map = {ri:{ai: atom_sasa.get(AtomID(ai, ri)) for ai in self._get_heavy_ai(aspose, ri)} for ri in range(1, aspose.size() + 1)}
+    #     atom_size_unclean = len([i for ii in [list(m.keys()) for resi, m in resi_atom_sasa_map.items()] for i in ii])
+    #     core_atom_size_unclean = len([i for ii in [list(m.keys()) for resi, m in resi_atom_sasa_map.items()] for i in ii if i in self.core_atoms_index])
+    #     # atom_sasa_arr = np.array(list(atom_sasa_map.values()))
+    #     # remove all atoms that have 0
+    #     resi_atom_sasa_map_clean = {}
+    #     for resi, atom_sasa_map in resi_atom_sasa_map.items():
+    #         resi_atom_sasa_map_clean[resi] = [atom for atom, sasa in atom_sasa_map.items() if sasa != 0]
+    #     # atom_sas_map
+    #     atom_size_clean = len([i for ii in [m for resi, m in resi_atom_sasa_map_clean.items()] for i in ii])
+    #     print(f"All atoms: {atom_size_unclean}")
+    #     print(f"{','.join(self.core_atoms_str)}: {core_atom_size_unclean}")
+    #     print(f"kept atoms: {atom_size_clean}")
+    #     return resi_atom_sasa_map_clean
 
     def _get_heavy_ai(self, pose, resi):
         residue = pose.residue(resi)
