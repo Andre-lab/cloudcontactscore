@@ -48,16 +48,17 @@ class CloudContactScore:
 
     Details
     -----------------------------
-    The score function has x components that either gives penalties (+) or bonuses (-) to the score:
+    The score function has 5 components that either gives penalties (+) or bonuses (-) to the score:
     1. Clash penalty based on the distance between atoms.
     2. Neighbour bonus based on the distance between CB (if residue!=GLY) or CA (if residue=GLY) atoms.
     3. Backbone hydrogen bond bonuses for correct orientation of hydrogen bonds.
     4. Secondary structure interaction bonus. In DSSP terminology: L-interactions are worse than H- or E-interactions.
-    5. Anchorage interaction bonus. Residues that are anchored to the subunit (calcualted through internal interactions) gives higher bonus.
+    5. Anchorage interaction bonus. Residues that are anchored to the subunit (calculated through internal interactions) gives higher bonus.
     Each of these score term contributions can be turned on and off and their weight/behavior modified.
+    See "Score term details" below for more information
 
     CloudContactScore uses a point cloud representation where each points in the cloud represents a particular portion of a protein.
-    By default (atom_selection='surface') this is the surface of protein without the present of surface side chains beyond CB atoms. This
+    By default (atom_selection='surface') this is the surface of protein without the presence of surface side chains beyond CB atoms. This
     cloud is stored as numpy arrays and moved around in space in relation to the internal symmetry change in a fixed backbone pose.
     The point cloud is stored during initialization of the mover and any change to backbone of the pose afterwards will not be recognized
     by CloudContactScore.
@@ -71,12 +72,12 @@ class CloudContactScore:
     Score term details
     -----------------------------
     1. To calculate the clash penalty between two atoms the identity of atoms and their Lennard Jones (LJ) sphere is taken into account.
-       For all non Oxygen-Nitrogen interactions (NO-interactions / potential hydrogen bond pair) a clash is detected if their LJ-sphere overlaps
+       For all non Oxygen-Nitrogen interactions ("NO-interactions") a clash is detected if their LJ-sphere overlaps
        by a set overlap percentage (20% by default). NO-interactions can get closer than this and is set ny another parameter (1.2 Å by default).
        The penalty is given as on/off so there is no gradient involved. The LJ-sphere uses the Rosetta definition. Any heavy atoms beyond CB
-       in the side chains, including CB itself will have their clash distance set to 1.5 Å by default (originally CB ≈ 1.61) to allow the b
-       ackbones to get closer.
-    2. To calculate neighbours bonuses, each connection between CB (if residue!=GLY) or CA (if residue=GLY) between the main/master subunit
+       in the side chains, including CB itself will have their clash distance set to 1.5 Å by default (originally CB ≈ 1.61) to allow the
+       backbones to get closer.
+    2. To calculate neighbour bonuses, each connection between CB (if residue!=GLY) or CA (if residue=GLY) between the main/master subunit
        and opposing subunits that are within a certain distance (12 Å by default) adds -1 to the neighbour score.
     3. The hydrogen bond score is done through the "hbond_sr_bb" and "hbond_lr_bb" score terms in Rosetta.
     4. The secondary structure is added as a weight through the neighbour score. If the neighbour score is not turn on neither will this
@@ -95,9 +96,6 @@ class CloudContactScore:
     For design:
     use_atoms_beyond_CB=True
     use_neighbour_ss=True
-
-    rotamer information from the pose. This is not good for docking as we want to explore alternative rotamers. This is however good for
-    design, at least in the case where
     """
 
     def __init__(self, pose, atom_selection="surface", clash_dist: dict = None, neighbour_dist=12, no_clash=1.2,
