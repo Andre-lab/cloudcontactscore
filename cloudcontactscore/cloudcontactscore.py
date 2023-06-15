@@ -24,11 +24,9 @@ from symmetryhandler.utilities import get_updated_symmetry_file_from_pose, get_s
 from symmetryhandler.reference_kinematics import set_all_dofs_to_zero
 from pyrosetta.rosetta.protocols.symmetry import SetupForSymmetryMover
 from pyrosetta.rosetta.core.pose.datacache import CacheableDataType
-from pyrosetta.rosetta.core.select.residue_selector import LayerSelector
-from pyrosetta.rosetta.core.pack.task.operation import OperateOnResidueSubset, RestrictToRepackingRLT, PreventRepackingRLT
-from pyrosetta.rosetta.core.pack.task import TaskFactory
-from pyrosetta.rosetta.core.select.util import calc_sc_neighbors, SelectResiduesByLayer
+from pyrosetta.rosetta.core.select.util import SelectResiduesByLayer
 from cubicsym.cubicsetup import CubicSetup
+from cubicsym.utilities import get_chain_map_as_dict
 
 class CloudContactScore:
     """Fast score function for fixed backbone coarse grained docking or design of cubic symmetrical proteins.
@@ -37,12 +35,14 @@ class CloudContactScore:
     -----------------------------
     CloudContactScore is meant to be used on Rosetta Pose objects but does not inherit from the ScoreFunction class in Rosetta and can
     therefor not be used in place of a regular Rosetta score function. All the features of the CloudContactScore score function is set
-    during the initialization of it (see __init__ below). Following this, each invocation of the 'score' method will calculate the score
+    during the initialization of it (see __init__() below). Following this, each invocation of the 'score()' method will calculate the score
     of the symmetrical pose.
 
     Usage example
     -----------------------------
     ccs = CloudContactScore(pose)
+    # move the pose to a new position
+    ccs.score(pose)
     # move the pose to a new position
     ccs.score(pose)
 
@@ -73,7 +73,7 @@ class CloudContactScore:
     -----------------------------
     1. To calculate the clash penalty between two atoms the identity of atoms and their Lennard Jones (LJ) sphere is taken into account.
        For all non Oxygen-Nitrogen interactions ("NO-interactions") a clash is detected if their LJ-sphere overlaps
-       by a set overlap percentage (20% by default). NO-interactions can get closer than this and is set ny another parameter (1.2 Å by default).
+       by a set overlap percentage (20% by default). NO-interactions can get closer than this and is set by another parameter (1.2 Å by default).
        The penalty is given as on/off so there is no gradient involved. The LJ-sphere uses the Rosetta definition. Any heavy atoms beyond CB
        in the side chains, including CB itself will have their clash distance set to 1.5 Å by default (originally CB ≈ 1.61) to allow the
        backbones to get closer.
@@ -98,12 +98,13 @@ class CloudContactScore:
     use_neighbour_ss=True
     """
 
-    def __init__(self, pose, atom_selection="surface", clash_dist: dict = None, neighbour_dist=12, no_clash=1.2,
-                 use_neighbour_anchorage=True, use_neighbour_ss=True, apply_symmetry_to_score=True, clash_penalty=100000,
-                 use_hbonds=True, interaction_bonus: dict = None, lj_overlap=20, use_atoms_beyond_CB=True, symdef=None):
+    def __init__(self, pose, cubicsetup, atom_selection="surface", clash_dist: dict = None, neighbour_dist=12, no_clash=1.2,
+                 use_neighbour_anchorage=True, use_neighbour_ss=True, apply_symmetry_to_score=True, clash_penalty=100000, use_hbonds=True,
+                 interaction_bonus: dict = None, lj_overlap=20, use_atoms_beyond_CB=True, verbose=False):
         """Initialization of a CloudContactScore object.
 
         :param pose: Pose to use for scoring. CloudContactScore will use the main/master subunit to create the internal point cloud.
+        :param cubicsetup: CubicSetup associated with the cubic symmetrical pose.
         :param atom_selection: Selection method to use when selecting the point cloud. Options are 'surface', 'core' and 'all'. 'surface' is
                highly recommend as the others are not well tested.
         :param clash_dist: Clash distances to use instead of the default ones. 
@@ -114,23 +115,17 @@ class CloudContactScore:
         :param apply_symmetry_to_score: Apply symmetry weights to the score.
         :param clash_penalty: The score added to final score for each clash detected in the pose
         :param use_hbonds: Use hydrogen bond score in the final score.
-        :param interaction_bonus: Add interaction bonuses between different subunits. Usefull if you want to design specific interactions.
+        :param interaction_bonus: Add interaction bonuses between different subunits. Useful if you want to design specific interactions.
                The keys of the dictionary are the Pose chain numbers and the values the weights. Example: {2: 1, 3: 1, 6: 3, 7:1, 8: 3}
         :param lj_overlap: LJ_overlap to use when calculating the default clash distances.
         :param use_atoms_beyond_CB: Use atoms beyond CB in the point cloud for residues not designated as surface.
-        :param symdef: Symmetry file to use when creating a visualization of the point cloud. If you are not visualizing the point cloud
-               you can disregard this option.
+        :param verbose: Output information about what is going on
         """
-        self.jump_apply_order = ['JUMPHFfold1', 'JUMPHFfold1_z', 'JUMPHFfold111', 'JUMPHFfold111_x', 'JUMPHFfold111_y', 'JUMPHFfold111_z']
+        self.cubicsetup = cubicsetup
         self.symmetry_type = CubicSetup.cubic_symmetry_from_pose(pose)
+        self.symmetry_base = CubicSetup.get_base_from_pose(pose)
+        self.map_chains()
         self.use_atoms_beyond_CB = use_atoms_beyond_CB
-        if self.symmetry_type in ("I", "O"):
-            self.chain_ids_in_use = [1, 2, 3, 8, 7, 6]
-            self.hfs = {0: (2, 3), 1: (8,), 2: (7, 6)}
-        else:
-            assert self.symmetry_type == "T"
-            self.chain_ids_in_use = [1, 2, 4, 6, 5]
-            self.hfs = {0: (2,), 1: (4,), 2: (6, 5)}
         self.chain_names_in_use = [pose.pdb_info().chain(pose.chain_end(i)) for i in self.chain_ids_in_use]
         self.core_atoms_str = ["CB", "N", "O", "CA", "C"]
         self.core_atoms_index = self._get_atom_indices(self.core_atoms_str)
@@ -140,18 +135,23 @@ class CloudContactScore:
         self.neighbour_dist = neighbour_dist
         self.neighbour_anchorage = use_neighbour_anchorage
         self.neighbour_ss = use_neighbour_ss
+        self.verbose = verbose
         if self.neighbour_ss:
-            self.dssp = Vector1(Dssp(pose).get_dssp_secstruct())
+            self.dssp = self._create_dssp(pose)
+        else:
+            self.dssp = None
         self.clash_penalty = clash_penalty
         self.use_hbonds = use_hbonds
         if self.use_hbonds:
             self.hbond_score = self._create_hbonds_scores()
+        else:
+            self.hbond_score = None
         assert atom_selection in ("surface", "all", "core")
         # creating point cloud
         self.atom_selection = atom_selection
         self.clash_dist_str, self.clash_dist_int = self._create_default_clash_distances(pose, clash_dist=clash_dist, lj_overlap=lj_overlap)
         self.sym_ri_ai_map = self._select_atoms(pose, atom_selection)
-        self.symdef = symdef
+        self.symdef = cubicsetup
         self.connected_jumpdof_map = self._create_connectted_jumpdof_map(pose)
         self.point_clouds = self._get_point_clouds(pose)
         self.point_cloud_size = len(self.point_clouds[1])
@@ -166,6 +166,32 @@ class CloudContactScore:
         self.masked_coordination_wt = self.coordination_wt[self.neighbour_mask]
         # other
         self.clash_limit_matrix = self._create_clash_limit_matrix()
+        # _internal_update is not strictly nescesarry but will give meaning for some attributes such as self.main, self.rest
+        # straight after initialization
+        self._internal_update(pose)
+
+    @staticmethod
+    def _create_dssp(pose):
+        return Vector1(Dssp(pose).get_dssp_secstruct())
+
+    def map_chains(self):
+        """"""
+        # this is the general setup if the base is HF
+        if self.symmetry_type in ("I", "O"):
+            self.chain_ids_in_use = [1, 2, 3, 8, 7, 6]
+            self.hfs = {0: (2, 3), 1: (8,), 2: (7, 6)}
+        else:
+            assert self.symmetry_type == "T"
+            self.chain_ids_in_use = [1, 2, 4, 6, 5]
+            self.hfs = {0: (2,), 1: (4,), 2: (6, 5)}
+        # The following varies depending on which base we have. If the base is not HF, we have to change
+        # self.chain_ids_in_use and self.hfs
+        jid = self.cubicsetup.get_jumpidentifier()
+        self.jump_apply_order = [f'JUMP{jid}fold1', f'JUMP{jid}fold1_z', f'JUMP{jid}fold111', f'JUMP{jid}fold111_x', f'JUMP{jid}fold111_y', f'JUMP{jid}fold111_z']
+        if self.cubicsetup.get_base() != "HF":
+            chain_map = get_chain_map_as_dict(symmetry_type=self.symmetry_type, is_righthanded=self.cubicsetup.righthanded)
+            self.chain_ids_in_use = [chain_map[c][self.symmetry_base] for c in self.chain_ids_in_use]
+            self.hfs = {k: tuple(chain_map[c][self.symmetry_base] for c in v) for k, v in self.hfs.items()}
 
     # --- score functions, either total or individual ones --- #
 
@@ -215,8 +241,9 @@ class CloudContactScore:
         self._internal_update(pose)
         return self._compute_clashes()
 
-    def hf_clashes(self) -> dict:
+    def hf_clashes(self, pose) -> dict:
         """returns the number of HF clashes for each HF"""
+        self._internal_update(pose)
         hf_clashes = {}
         for hf, hf_mask in self.hf_masks.items():
             hf_clashes[hf] = int(np.sum((self.distances[hf_mask] < 0) * self.symmetric_wt[hf_mask]))
@@ -251,8 +278,8 @@ class CloudContactScore:
     def show_in_pymol(self, pose, visualizer, show_clashes=True):
         self._internal_update(pose)
         # fixme: why do we call this again? this is called in internal_update
-        self._apply_symmetry_to_point_cloud(pose)
-        self._store_distances()
+        # self._apply_symmetry_to_point_cloud(pose)
+        # self._store_distances()
         pose_repr = self._get_pose_representation(pose)
         visualizer.construct_pose_name(pose_repr)
         visualizer.pmm.apply(pose_repr)
@@ -260,6 +287,8 @@ class CloudContactScore:
         cloud_name = "/home/mads/local_tmp/point_cloud.pdb"
         self.output_point_cloud_as_pdb(cloud_name)
         name = pose.pdb_info().name() + "_"
+        if name == "_":
+            name = ""
         point_cloud_name = f"{name}point_cloud"
         file_2_load = f"/Users/mads/mounts/mailer/{cloud_name}"
         visualizer.cmd.do(f"load {file_2_load}, {point_cloud_name}")
@@ -274,6 +303,8 @@ class CloudContactScore:
                 visualizer.mark_distance_by_rank(main, rest + self.point_cloud_size, f"{point_cloud_name}")
 
     def output_point_cloud_as_pdb(self, filename, storing_cloud=False):
+        if self.use_atoms_beyond_CB == True:
+            raise NotImplementedError("This representation will not look right with self.use_atoms_beyond_CB == False!")
         txt = "{:6s}{:5d} {:^4s}{:1s}{:3s} {:1s}{:4d}{:1s}   {:8.3f}{:8.3f}{:8.3f}{:6.2f}{:6.2f}          {:>2s}{:2s}\n"
         ATOM_NAME = ["N", "CA", "C", "O", "CB"]
         ELEMENT = ["N", "C", "C", "O", "C"]
@@ -314,7 +345,8 @@ class CloudContactScore:
 
 # --- internal/private functions that does stuff under the hood --- #
 
-    def _create_hbonds_scores(self):
+    @staticmethod
+    def _create_hbonds_scores():
         scorefxn = ScoreFunctionFactory.create_score_function("empty")
         terms, weights = ("hbond_sr_bb", "hbond_lr_bb"), (1, 1)
         for term, weight in zip(terms, weights):
@@ -360,7 +392,8 @@ class CloudContactScore:
         return resi_nbrs
 
     def _create_coordination_weights(self, pose, interaction_bonus):
-        print("creating coordination weigths")
+        if self.verbose:
+            print("creating coordination weigths")
         coordination_wts = []
         # 1. add weights according to the anchorage of each residue on its own chain and the secondary structure type it is from
         for ri, aii in self.sym_ri_ai_map[1].items():
@@ -377,7 +410,8 @@ class CloudContactScore:
         # 2. add bonus to the weights according to the which chain interaction it is from
         if interaction_bonus:
             coordination_wts *= self._bcast_bonus(interaction_bonus)
-        print("DONE!")
+        if self.verbose:
+            print("DONE!")
         return coordination_wts
 
     def _bcast_bonus(self, interaction_bonus):
@@ -391,7 +425,8 @@ class CloudContactScore:
         return np.array([bonus for bonus in bonuses for _ in range(self.point_cloud_size)])
 
     def _create_symweigts(self, pose):
-        print("creating symmetry weights")
+        if self.verbose:
+            print("creating symmetry weights")
         si = pose.conformation().Symmetry_Info()
         symweights = []
         for ri, aii in self.sym_ri_ai_map[1].items():
@@ -402,7 +437,8 @@ class CloudContactScore:
                         for aj in ajj:
                             symweights_row.append(si.score_multiply(ri, rj))
                 symweights.append(symweights_row)
-        print("DONE!")
+        if self.verbose:
+            print("DONE!")
         return np.array(symweights)
 
     def _assign_to_hf(self, chain):
@@ -419,7 +455,8 @@ class CloudContactScore:
 
     # TODO: perhaps init the arrays with numpy and then calculate a function over the arrays to make it faster
     def _create_masks(self, pose):
-        print("creating masks")
+        if self.verbose:
+            print("creating masks")
         neighbour, no, hf = [], [], []
         for ri, aii in self.sym_ri_ai_map[1].items():
             rir = pose.residue(ri)
@@ -438,7 +475,8 @@ class CloudContactScore:
         neighbour = np.array(neighbour)
         no = np.array(no)
         hf = np.array(hf)
-        print("DONE!")
+        if self.verbose:
+            print("DONE!")
         return neighbour, no, self._finalize_hf_mask(hf)
 
     def _is_neighbour_interaction(self, rir, ai, rjr, aj):
@@ -471,7 +509,7 @@ class CloudContactScore:
 
         The algorithm is as follows:
 
-        1. Calculate SASA for all atoms in the pose. All residues with a total sasa (add up their atom sasas) of less than 20 are changed to
+        1. Calculate SASA for all atoms in the pose. All residues with a total sasa (add up their atom sasas) of more than 20 are changed to
         ALA, except if they are already GLY.
 
         2. Calculate CA-CB cone for all residues. All residues with less than 2.0 CA atoms in that cone are also changed to ALA,
@@ -509,7 +547,14 @@ class CloudContactScore:
         srbl.use_sidechain_neighbors(True)
         srbl.sasa_core(5.2)
         srbl.sasa_surface(2.0)
-        surface_residues_from_cone = set(srbl.compute(aspose))
+        try:
+            surface_residues_from_cone = set(srbl.compute(aspose))
+        except RuntimeError as e:
+            # This produces the following error: /source/src/numeric/xyzVector.hh:654 Cannot create normalized xyzVector from vector of length() zero.
+            # I believe this is when you have a very small protein that does not have any core (I get it when i run pdbid: 7JRH)
+            # so in this case all atoms should actually be chosen
+            surface_residues_from_cone = surface_residues_from_sasa
+
         # print(f"sele cone_surf_res, chain A and resi {'+'.join(map(str, surface_residues_from_cone))}")
 
         # combine them:
@@ -538,9 +583,10 @@ class CloudContactScore:
             resi_atom_sasa_map_clean[resi] = [atom for atom, sasa in atom_sasa_map.items() if sasa != 0]
         # atom_sas_map
         atom_size_clean = len([i for ii in [m for resi, m in resi_atom_sasa_map_clean.items()] for i in ii])
-        print(f"All atoms: {atom_size_unclean}")
-        print(f"{','.join(self.core_atoms_str)}: {core_atom_size_unclean}")
-        print(f"kept atoms: {atom_size_clean}")
+        if self.verbose:
+            print(f"All atoms: {atom_size_unclean}")
+            print(f"{','.join(self.core_atoms_str)}: {core_atom_size_unclean}")
+            print(f"kept atoms: {atom_size_clean}")
         return resi_atom_sasa_map_clean
 
     # def _mark_surface_cone_atoms(self, aspose):
@@ -930,7 +976,7 @@ class CloudContactScore:
             self.symdef = StringIO(get_symmetry_file_from_pose(pose))
         else:
             assert self.symdef, "if the pose does not contain a symmetry comment then the symmetry file must be supplied in self.symdef"
-        symdef = get_updated_symmetry_file_from_pose(pose, self.symdef)
+        symdef = get_updated_symmetry_file_from_pose(pose, self.symdef.symmetry_name)
         with open(tmp_symm, "w") as f:
             f.write(symdef)
         SetupForSymmetryMover(tmp_symm).apply(aspose)

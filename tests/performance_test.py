@@ -21,7 +21,7 @@ current_struct = True
 
 pdbs = None
 if rank == 0:
-    df = pd.read_csv("input/rcsb_pdb_custom_report_20221011033220.csv", header=1)
+    df = pd.read_csv("input/files/rcsb_pdb_custom_report_20221011033220.csv", header=1)
     del df["Unnamed: 7"]
     df = df[df["Symbol"].isin(("I", "O", "T"))]
     df = df[df["Total Number of Polymer Instances (Chains) per Assembly"].isin((60, 24, 12))]
@@ -43,7 +43,7 @@ pdbs = comm.scatter(pdbs, root=0)
 for pdb in pdbs: #  pd.concat([df_old, df])
     pose, symdef = setup_test(name="I", file=pdb, return_symmetry_file=True, mute=True, pymol=False)
     print(f"reading in {pdb}")
-    css = CloudContactScore(pose, use_hbonds=True)
+    css = CloudContactScore(pose, None, use_hbonds=True)
     score = css.breakdown_score_as_dict(pose)
     score["pdb"] = pdb
     df = pd.DataFrame({k: [v] for k, v in score.items()})
