@@ -7,9 +7,7 @@ CloudContactScore class
 """
 import math
 from pyrosetta.rosetta.core.scoring import ScoreFunctionFactory, ScoreTypeManager
-# FIXME: delete before release vvvvv
-from shapedesign.src.movers.modify_representation import ModifyRepresentation
-# FIXME: delete before release ^^^^^
+from cloudcontactscore.modify_representation import ModifyRepresentation
 import numpy as np
 from io import StringIO
 from itertools import cycle
