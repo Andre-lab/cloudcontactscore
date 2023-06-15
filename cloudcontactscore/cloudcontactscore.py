@@ -7,7 +7,7 @@ CloudContactScore class
 """
 import math
 from pyrosetta.rosetta.core.scoring import ScoreFunctionFactory, ScoreTypeManager
-from cloudcontactscore.modify_representation import ModifyRepresentation
+from cloudcontactscore.modify_aa import build_new_aa_repr
 import numpy as np
 from io import StringIO
 from itertools import cycle
@@ -559,7 +559,8 @@ class CloudContactScore:
         all_surface_residues = set(surface_residues_from_sasa).union(set(surface_residues_from_cone))
 
         # print(f"sele core_res, chain A and resi {'+'.join(map(str, core_residues))}")
-        ModifyRepresentation(residues=all_surface_residues, unaffected="G").apply(aspose)
+        # ModifyRepresentation(residues=all_surface_residues, unaffected="G").apply(aspose)
+        build_new_aa_repr(aspose, mutant_aa="A", residues=all_surface_residues, types_not_to_mutate="G")
 
         # 3 Calculate Sasa again on the modified aspose and get all the atoms that have 0 sasa
         s.calculate(aspose)

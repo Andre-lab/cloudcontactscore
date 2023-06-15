@@ -18,11 +18,11 @@ def test_CloudContactScore_on_normalized():
     df_ = pd.read_csv("/home/mads/projects/cubicsym/tests/outputs/normalization_info_benchmark.csv")
     for pdb_base in df["pdb_base"].unique():
         pdb, base = pdb_base.split("_")
-        if pdb != "7OHF":
-            continue
+        # if pdb != "7OHF":
+        #     continue
         sym = df[df["pdb_base"] == pdb_base]["symmetry"].unique()[0]
         pose, pmm, cmd = setup_test(name=sym, file=pdb, mute=True, return_symmetry_file=False, symmetrize=False)
-        symdef = DATA + f"/{sym}/{sym}_{base}_norm.symm"
+        symdef = str(DATA) + f"/{sym}/{sym}_{base}_norm.symm"
         cs = CubicSetup(symdef)
         cs.make_symmetric_pose(pose)
         # transfer
