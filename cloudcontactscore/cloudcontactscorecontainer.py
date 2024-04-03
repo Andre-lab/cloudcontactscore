@@ -62,16 +62,16 @@ class CloudContactScoreContainer:
     ccsc.cmc.recover_lowest_scored_pose(pose)
     """
 
-    def __init__(self, pose, symdef, low_memory=False, verbose=False):
+    def __init__(self, pose, cubicsetup: CubicSetup, low_memory=False, verbose=False, **cloudcontactscore_param):
         """Instantiate an object of the class"""
-        self.symdef = symdef
-        self.sds = SymDefSwapper(pose, symdef)
+        self.sds = SymDefSwapper(pose, cubicsetup)
         self.ccs = None
         self.cmc = None
         self.pointer_to_ccs, self.pointer_to_cmc = {}, {}
         self.low_memory = low_memory
         self.dir_ref = f"{tempfile.gettempdir()}/{uuid.uuid4()}"
         self.verbose = verbose
+        self.cloudcontactscore_param = cloudcontactscore_param
 
     def get_cubic_setup_from_base(self, base):
         """Returns the cubicsetup that corresponds to the base"""
@@ -87,7 +87,7 @@ class CloudContactScoreContainer:
         base = CubicSetup.get_base_from_pose(pose)
         cubicsetup = self.get_cubic_setup_from_base(base)
         ccs = CloudContactScore(pose=pose, cubicsetup=cubicsetup,
-                                use_atoms_beyond_CB=False, use_neighbour_ss=False)
+                                use_atoms_beyond_CB=False, use_neighbour_ss=False, **self.cloudcontactscore_param)
         return ccs
 
     def construct_cmc(self, pose, ccs):

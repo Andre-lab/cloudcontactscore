@@ -18,7 +18,6 @@ from scipy.spatial.distance import cdist
 from scipy.spatial.transform import Rotation as R
 from symmetryhandler.reference_kinematics import set_jumpdof_int_int, get_jumpdof_int_int
 from pyrosetta.rosetta.core.scoring.dssp import Dssp
-from symmetryhandler.utilities import get_updated_symmetry_file_from_pose, get_symmetry_file_from_pose
 from symmetryhandler.reference_kinematics import set_all_dofs_to_zero
 from pyrosetta.rosetta.protocols.symmetry import SetupForSymmetryMover
 from pyrosetta.rosetta.core.pose.datacache import CacheableDataType
@@ -98,7 +97,8 @@ class CloudContactScore:
 
     def __init__(self, pose, cubicsetup, atom_selection="surface", clash_dist: dict = None, neighbour_dist=12, no_clash=1.2,
                  use_neighbour_anchorage=True, use_neighbour_ss=True, apply_symmetry_to_score=True, clash_penalty=100000, use_hbonds=True,
-                 interaction_bonus: dict = None, lj_overlap=20, use_atoms_beyond_CB=True, verbose=False):
+                 interaction_bonus: dict = None, lj_overlap=20, use_atoms_beyond_CB=False, verbose=False,
+                 extra_chain_interaction_disfavored=False):
         """Initialization of a CloudContactScore object.
 
         :param pose: Pose to use for scoring. CloudContactScore will use the main/master subunit to create the internal point cloud.
@@ -118,11 +118,16 @@ class CloudContactScore:
         :param lj_overlap: LJ_overlap to use when calculating the default clash distances.
         :param use_atoms_beyond_CB: Use atoms beyond CB in the point cloud for residues not designated as surface.
         :param verbose: Output information about what is going on
+        :param extra_chain_interaction_disfavored: If the interactions with extra chains (chain interactions outside the nearest
+               5-, 3-, and 2-fold interaction) should be disallowed or not. Is only applicable if the supplied cubicsetup
+               models extra chains.
         """
         self.cubicsetup = cubicsetup
         self.symmetry_type = CubicSetup.cubic_symmetry_from_pose(pose)
         self.symmetry_base = CubicSetup.get_base_from_pose(pose)
-        self.map_chains()
+        self.has_extra_chains = self.cubicsetup.has_extra_chains(pose)
+        self.extra_chain_interaction_disallowed = extra_chain_interaction_disfavored
+        self.map_chains(pose)
         self.use_atoms_beyond_CB = use_atoms_beyond_CB
         self.chain_names_in_use = [pose.pdb_info().chain(pose.chain_end(i)) for i in self.chain_ids_in_use]
         self.core_atoms_str = ["CB", "N", "O", "CA", "C"]
@@ -155,15 +160,24 @@ class CloudContactScore:
         self.point_cloud_size = len(self.point_clouds[1])
         self.main = np.zeros(self.point_clouds[1].shape)
         self.rest = np.zeros((self.point_clouds[1].shape[0]*len(self.chain_ids_in_use[1:]), 3))
-        self.matrix_shape = (self.main.shape[0], self.rest.shape[0])
         # masks and weights
-        self.neighbour_mask, self.donor_acceptor_mask, self.hf_masks = self._create_masks(pose)
+        self.neighbour_mask, self.donor_acceptor_mask, self.hf_masks, self.extra_chains_mask = self._create_masks(pose)
         self.symmetric_wt = self._create_symweigts(pose)
         self.coordination_wt = self._create_coordination_weights(pose, interaction_bonus)
         self.masked_symmetric_coordination_wt = self.symmetric_wt[self.neighbour_mask] * self.coordination_wt[self.neighbour_mask]
         self.masked_coordination_wt = self.coordination_wt[self.neighbour_mask]
         # other
         self.clash_limit_matrix = self._create_clash_limit_matrix()
+        # check corrects shapes
+        self.main_atoms = self.main.shape[0]
+        self.rest_atoms = self.rest.shape[0]
+        self.matrix_shape = (self.main.shape[0], self.rest.shape[0])
+        assert self.rest_atoms == self.main_atoms * (len(self.chain_ids_in_use) - 1)
+        assert self.neighbour_mask.shape == self.matrix_shape
+        assert self.coordination_wt.shape == self.matrix_shape
+        assert self.symmetric_wt.shape == self.matrix_shape
+        assert self.clash_limit_matrix.shape  == self.matrix_shape
+        assert all([p.shape == self.main.shape for n, p in self.point_clouds.items()])
         # _internal_update is not strictly nescesarry but will give meaning for some attributes such as self.main, self.rest
         # straight after initialization
         self._internal_update(pose)
@@ -172,22 +186,39 @@ class CloudContactScore:
     def _create_dssp(pose):
         return Vector1(Dssp(pose).get_dssp_secstruct())
 
-    def map_chains(self):
+    def map_chains(self, pose):
         """"""
         # this is the general setup if the base is HF
         if self.symmetry_type in ("I", "O"):
+            # if self.full_protection:
+            #     self.chain_ids_in_use = [1, 2, 3, 4, 5, 8, 7, 6, 9] # order?
+            #     self.hfs = {0: (2, 3, 4, 5), 1: (8,9), 2: (7, 6)}
+            #     # self.chains_full_1 = []
+            # else:
             self.chain_ids_in_use = [1, 2, 3, 8, 7, 6]
             self.hfs = {0: (2, 3), 1: (8,), 2: (7, 6)}
         else:
             assert self.symmetry_type == "T"
             self.chain_ids_in_use = [1, 2, 4, 6, 5]
             self.hfs = {0: (2,), 1: (4,), 2: (6, 5)}
+        self.extra_chains = None
+        self.extra_chain_clash_dist = None
+        if self.has_extra_chains:
+            self.extra_chains = [10, 11, 12, 13, 14, 15, 16]
+            if self.extra_chain_interaction_disallowed:
+                self.extra_chain_clash_dist = 10
+            self.chain_ids_in_use += self.extra_chains
+            self.hfs[3] = self.extra_chains
+
         # The following varies depending on which base we have. If the base is not HF, we have to change
         # self.chain_ids_in_use and self.hfs
         jid = self.cubicsetup.get_jumpidentifier()
         self.jump_apply_order = [f'JUMP{jid}fold1', f'JUMP{jid}fold1_z', f'JUMP{jid}fold111', f'JUMP{jid}fold111_x', f'JUMP{jid}fold111_y', f'JUMP{jid}fold111_z']
         if self.cubicsetup.get_base() != "HF":
             chain_map = get_chain_map_as_dict(symmetry_type=self.symmetry_type, is_righthanded=self.cubicsetup.righthanded)
+            if self.has_extra_chains:
+                for c in self.extra_chains:
+                    chain_map[c] = {"3F": c, "2F": c}
             self.chain_ids_in_use = [chain_map[c][self.symmetry_base] for c in self.chain_ids_in_use]
             self.hfs = {k: tuple(chain_map[c][self.symmetry_base] for c in v) for k, v in self.hfs.items()}
 
@@ -226,11 +257,11 @@ class CloudContactScore:
 
     def neighbour_score(self):
         """Computes the neighbour score."""
-        results = self._compute_neighbours()
+        neighbours = self._compute_neighbours()
         if self.apply_symmetry_to_score:
-            return - np.sum(results * self.masked_symmetric_coordination_wt)
+            return - np.sum(neighbours * self.masked_symmetric_coordination_wt)
         else:
-            return - np.sum(results * self.masked_coordination_wt)
+            return - np.sum(neighbours * self.masked_coordination_wt)
 
     # --- Functions that computes things that might be relevant outside the scoring it self --- #
 
@@ -278,7 +309,8 @@ class CloudContactScore:
         # fixme: why do we call this again? this is called in internal_update
         # self._apply_symmetry_to_point_cloud(pose)
         # self._store_distances()
-        pose_repr = self._get_pose_representation(pose)
+        # pose_repr = self._get_pose_representation(pose)
+        pose_repr = pose
         visualizer.construct_pose_name(pose_repr)
         visualizer.pmm.apply(pose_repr)
         visualizer.show_only_chains(self.chain_names_in_use)
@@ -308,7 +340,7 @@ class CloudContactScore:
         ELEMENT = ["N", "C", "C", "O", "C"]
         C = 1
         with open(filename, "w") as f:
-            for n, chain in enumerate(self.chain_names_in_use ):
+            for n, chain in enumerate(self.chain_names_in_use):
                 resi = 0
                 if storing_cloud:
                     points = self.point_clouds[chain]
@@ -403,8 +435,15 @@ class CloudContactScore:
             for _ in aii:
                 coordination_wts.append(wt)
         coordination_wts = np.array(coordination_wts)
-        other_chains = len(self.chain_ids_in_use[1:])
-        coordination_wts = coordination_wts[:, np.newaxis] * np.repeat(coordination_wts, other_chains)
+        # if the extra chains are disallowed we remove the neighbor interaction
+        if self.has_extra_chains and self.extra_chain_interaction_disallowed:
+            other_chains = len(self.chain_ids_in_use[1:]) - len(self.extra_chains)  # so all chains minus main and extra
+            coordination_wts = coordination_wts[:, np.newaxis] * np.repeat(coordination_wts, other_chains)
+            protection_chains_0_wts = np.zeros((len(coordination_wts), len(self.extra_chains) * len(coordination_wts)))
+            coordination_wts = np.concatenate([coordination_wts, protection_chains_0_wts], axis=1)
+        else:
+            other_chains = len(self.chain_ids_in_use[1:])
+            coordination_wts = coordination_wts[:, np.newaxis] * np.repeat(coordination_wts, other_chains)
         # 2. add bonus to the weights according to the which chain interaction it is from
         if interaction_bonus:
             coordination_wts *= self._bcast_bonus(interaction_bonus)
@@ -432,8 +471,13 @@ class CloudContactScore:
                 symweights_row = []
                 for chain in self.chain_ids_in_use[1:]:
                     for rj, ajj in self.sym_ri_ai_map[chain].items():
-                        for aj in ajj:
-                            symweights_row.append(si.score_multiply(ri, rj))
+                        for _ in ajj:
+                            if self.has_extra_chains and chain in self.extra_chains:
+                                score = si.score_multiply(ri, rj)
+                                # assert score > 1
+                                symweights_row.append(score)
+                            else:
+                                symweights_row.append(si.score_multiply(ri, rj))
                 symweights.append(symweights_row)
         if self.verbose:
             print("DONE!")
@@ -451,31 +495,46 @@ class CloudContactScore:
             hf_mask[hf] = hfs == hf
         return hf_mask
 
+    def get_non_extra_chains(self):
+        if self.has_extra_chains:
+            return [c for c in self.chain_ids_in_use if c not in self.extra_chains]
+        else:
+            return self.chain_ids_in_use
+
+
     # TODO: perhaps init the arrays with numpy and then calculate a function over the arrays to make it faster
     def _create_masks(self, pose):
         if self.verbose:
             print("creating masks")
-        neighbour, no, hf = [], [], []
+        neighbour, no, hf, extra_chains = [], [], [], []
         for ri, aii in self.sym_ri_ai_map[1].items():
             rir = pose.residue(ri)
             for ai in aii:
-                neighbour_row, no_row, hf_row = [], [], []
+                neighbour_row, no_row, hf_row, extra_chains_row = [], [], [], []
                 for chain in self.chain_ids_in_use[1:]:
                     for rj, ajj in self.sym_ri_ai_map[chain].items():
                         rjr = pose.residue(rj)
                         for aj in ajj:
-                            neighbour_row.append(self._is_neighbour_interaction(rir, ai, rjr, aj))
-                            no_row.append(self._is_donor_acceptor_pair(rir, ai, rjr, aj))
                             hf_row.append(self._assign_to_hf(chain))
+                            if self.has_extra_chains and chain in self.extra_chains:
+                                extra_chains_row.append(True)
+                                neighbour_row.append(False)
+                                no_row.append(False)
+                            else:
+                                extra_chains_row.append(False)
+                                neighbour_row.append(self._is_neighbour_interaction(rir, ai, rjr, aj))
+                                no_row.append(self._is_donor_acceptor_pair(rir, ai, rjr, aj))
                 neighbour.append(neighbour_row)
                 no.append(no_row)
                 hf.append(hf_row)
+                extra_chains.append(extra_chains_row)
         neighbour = np.array(neighbour)
         no = np.array(no)
         hf = np.array(hf)
+        extra_chains = np.array(extra_chains)
         if self.verbose:
             print("DONE!")
-        return neighbour, no, self._finalize_hf_mask(hf)
+        return neighbour, no, self._finalize_hf_mask(hf), extra_chains
 
     def _is_neighbour_interaction(self, rir, ai, rjr, aj):
         """Checks if the atom pairs ai and aj on residue rir and rjr are considered a neighbour. They are both are either the CA atom of
@@ -497,6 +556,9 @@ class CloudContactScore:
         radii_rest = np.array([radii for _ in range(len(self.chain_ids_in_use) - 1) for radii in radii_main])
         radii_all = radii_main[:, np.newaxis] + radii_rest
         radii_all[self.donor_acceptor_mask] = self.no_clash
+        if self.has_extra_chains and self.extra_chain_interaction_disallowed:
+            assert self.extra_chain_clash_dist is not None
+            radii_all[self.extra_chains_mask] = self.extra_chain_clash_dist
         return radii_all
 
     # fixme call the the residues found "subset" as that is what I call it in the docs
@@ -742,7 +804,7 @@ class CloudContactScore:
             for jumpid, dofs in syminfo.items():
                 # fixme: could be faster if you check if the angles are not zero
                 for dof in dofs:
-                    # the trans applies internally to the clou
+                    # the trans applies internally to the cloud
                     if dof == 1:
                         cloud += self._apply_x_trans(cloud, next(diff), pose, jumpid)
                     elif dof == 2:
@@ -959,7 +1021,8 @@ class CloudContactScore:
         return math.degrees(math.atan2(rot.yx, rot.xx))
 
     def _get_pose_representation(self, pose):
-        from shapedesign.src.utilities.pose import add_id_to_pose, get_pose_id
+        from shapedesign.source.utilities.pose import add_id_to_pose, get_pose_id
+        from shapedesign.source.utilities.symmetry import get_updated_symmetry_file_from_pose, get_symmetry_file_from_pose
         if self.atom_selection == "all":
             raise NotImplementedError  # should be easy to do though
         elif self.atom_selection == "core":
@@ -968,7 +1031,7 @@ class CloudContactScore:
             # NOTE: FOR SOME REASON set_dofs_to_0 CHANGES THE SASA???? so it is a bit different from the original one?????
             aspose = self._get_asymmetric_pose(pose, set_dofs_to_0=True)
             self._mark_surface_atoms(aspose)
-        #
+
         # now symmetrize it
         tmp_symm = "/tmp/symdef.symm"
         if pose.data().has(CacheableDataType.STRING_MAP):

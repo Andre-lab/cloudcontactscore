@@ -6,9 +6,11 @@ Tests for CloudContactScore
 @Date: 12/6/21
 """
 
+
+
 def test_CloudContactScore_on_normalized():
     from cloudcontactscore.cloudcontactscore import CloudContactScore
-    from simpletestlib.test import setup_test
+    from simpletestlib.setup_test import setup_test
     from cubicsym.kinematics import randomize_all_dofs
     import pandas as pd
     from cubicsym.paths import DATA
@@ -48,7 +50,7 @@ def test_CloudContactScore_on_normalized():
 
 def test_CloudContactScore_on_all_fold_kinds():
     from cloudcontactscore.cloudcontactscore import CloudContactScore
-    from simpletestlib.test import setup_test
+    from simpletestlib.setup import setup_test
     from cubicsym.kinematics import randomize_all_dofs
     from cubicsym.actors.symdefswapper import SymDefSwapper
     sym_files = {
@@ -84,8 +86,9 @@ def test_CloudContactScore_on_all_fold_kinds():
 
 def test_CloudContactScore():
     from cloudcontactscore.cloudcontactscore import CloudContactScore
-    from simpletestlib.test import setup_test
+    from simpletestlib.setup import setup_test
     from cubicsym.kinematics import randomize_all_dofs
+    from cubicsym.cubicsetup import CubicSetup
     sym_files = {
         "T": ["7JRH", "1MOG", "1H0S", "4KIJ", "2VTY"],
         "I": ["1STM", "1B5S", "1NQW", "6S44", "5CVZ"],
@@ -94,11 +97,13 @@ def test_CloudContactScore():
     for sym, files in sym_files.items():
         for file in files:
             pose, pmm, cmd, symdef = setup_test(name=sym, file=file, mute=True, return_symmetry_file=True)
-            css = CloudContactScore(pose, cubicsetup=symdef, atom_selection="surface", use_neighbour_ss=False, use_atoms_beyond_CB=False)
+            css = CloudContactScore(pose, cubicsetup=CubicSetup(symdef), atom_selection="surface", use_neighbour_ss=False, use_atoms_beyond_CB=False)
+
+            css.score(pose)
 
             # TEST 1: test that the point cloud follows the pose as it changes to new positions
-            from shapedesign.src.visualization.visualizer import Visualizer
-            css.show_in_pymol(pose, Visualizer())
+            from shapedesign.source.visualization.posevisualizer import PoseVisualizer
+            css.show_in_pymol(pose, PoseVisualizer())
             for i in range(10):
                 randomize_all_dofs(pose)
                 try:
@@ -110,7 +115,7 @@ def test_CloudContactScore():
 
 def test_css_score():
     from cloudcontactscore.cloudcontactscore import CloudContactScore
-    from simpletestlib.test import setup_test
+    from simpletestlib.setup import setup_test
     pose, pmm, cmd, symdef = setup_test(name="I", file="1STM", return_symmetry_file=True, mute=False)
     css = CloudContactScore(pose, None)
     score_css = css.score(pose)
