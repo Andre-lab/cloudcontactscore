@@ -22,7 +22,6 @@ setup(
         "cubicsym @ git+https://github.com/Andre-lab/cubicsym",
         "numpy",
         "scipy",
-        "pyrosetta",
     ],
     # FIXME: mpi could be an optional in the the future
     #	install_requires = []
