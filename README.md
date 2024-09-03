@@ -9,9 +9,8 @@ With pip directly:
 pip install git+https://github.com/Andre-lab/cloudcontactscore.git
 ```
 
-or with through the commandlind:
+Or with through the commandline:
 
-Clone the evodock repository and `cd` into it. Then run the install script.
 ```console
 git clone https://github.com//cloudcontactscore.git
 cd ./cloudcontactscore
