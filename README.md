@@ -9,7 +9,7 @@ With pip directly:
 pip install git+https://github.com/Andre-lab/cloudcontactscore.git
 ```
 
-Or with through the commandline:
+Or with pip through the commandline:
 
 ```console
 git clone https://github.com//cloudcontactscore.git
