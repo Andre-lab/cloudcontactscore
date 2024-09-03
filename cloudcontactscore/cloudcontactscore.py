@@ -23,7 +23,6 @@ from pyrosetta.rosetta.protocols.symmetry import SetupForSymmetryMover
 from pyrosetta.rosetta.core.pose.datacache import CacheableDataType
 from pyrosetta.rosetta.core.select.util import SelectResiduesByLayer
 from symmetryhandler.symmetrysetup import SymmetrySetup
-from symmetryhandler.cyclicsymmetry import CyclicalSymmetry
 from cubicsym.cubicsetup import CubicSetup
 from cubicsym.utilities import get_chain_map_as_dict
 from pyrosetta.rosetta.core.pose.symmetry import is_symmetric
@@ -98,7 +97,7 @@ class CloudContactScore:
     use_neighbour_ss=True
     """
 
-    def __init__(self, pose, symmetrysetup, atom_selection="surface", clash_dist: dict = None, neighbour_dist=12, no_clash=1.2,
+    def __init__(self, pose, symmetrysetup: SymmetrySetup, atom_selection="surface", clash_dist: dict = None, neighbour_dist=12, no_clash=1.2,
                  use_neighbour_anchorage=True, use_neighbour_ss=True, apply_symmetry_to_score=True, clash_penalty=100000, use_hbonds=True,
                  interaction_bonus: dict = None, lj_overlap=20, use_atoms_beyond_CB=False, verbose=False,
                  extra_chain_interaction_disfavored=False):
