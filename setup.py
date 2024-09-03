@@ -18,8 +18,8 @@ setup(
     author_email='mads.jeppesen@biochemistry.lu.se',
     description='Fast score function for coarse grained protein docking',
     install_requires=[
-        "symmetryhandler @ git+https://github.com/Andre-lab/symmetryhandler@main",
-        "cubicsym @ git+https://github.com/Andre-lab/cubicsym@main",
+        "symmetryhandler @ git+https://github.com/Andre-lab/symmetryhandler",
+        "cubicsym @ git+https://github.com/Andre-lab/cubicsym",
         "numpy",
         "scipy",
         "pyrosetta",
