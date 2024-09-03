@@ -3,15 +3,14 @@ Fast score function for coarse grained protein docking
 
 # Installation
 
-With pip:
+With pip directly:
 
 ```console
 pip install git+https://github.com/Andre-lab/cloudcontactscore.git
 ```
 
-or 
+Or with pip through the commandline:
 
-Clone the evodock repository and `cd` into it. Then run the install script.
 ```console
 git clone https://github.com//cloudcontactscore.git
 cd ./cloudcontactscore
