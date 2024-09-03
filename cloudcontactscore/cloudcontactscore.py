@@ -22,8 +22,11 @@ from symmetryhandler.reference_kinematics import set_all_dofs_to_zero
 from pyrosetta.rosetta.protocols.symmetry import SetupForSymmetryMover
 from pyrosetta.rosetta.core.pose.datacache import CacheableDataType
 from pyrosetta.rosetta.core.select.util import SelectResiduesByLayer
+from symmetryhandler.symmetrysetup import SymmetrySetup
+from symmetryhandler.cyclicsymmetry import CyclicalSymmetry
 from cubicsym.cubicsetup import CubicSetup
 from cubicsym.utilities import get_chain_map_as_dict
+from pyrosetta.rosetta.core.pose.symmetry import is_symmetric
 
 class CloudContactScore:
     """Fast score function for fixed backbone coarse grained docking or design of cubic symmetrical proteins.
@@ -95,7 +98,7 @@ class CloudContactScore:
     use_neighbour_ss=True
     """
 
-    def __init__(self, pose, cubicsetup, atom_selection="surface", clash_dist: dict = None, neighbour_dist=12, no_clash=1.2,
+    def __init__(self, pose, symmetrysetup, atom_selection="surface", clash_dist: dict = None, neighbour_dist=12, no_clash=1.2,
                  use_neighbour_anchorage=True, use_neighbour_ss=True, apply_symmetry_to_score=True, clash_penalty=100000, use_hbonds=True,
                  interaction_bonus: dict = None, lj_overlap=20, use_atoms_beyond_CB=False, verbose=False,
                  extra_chain_interaction_disfavored=False):
@@ -122,12 +125,10 @@ class CloudContactScore:
                5-, 3-, and 2-fold interaction) should be disallowed or not. Is only applicable if the supplied cubicsetup
                models extra chains.
         """
-        self.cubicsetup = cubicsetup
-        self.symmetry_type = CubicSetup.cubic_symmetry_from_pose(pose)
-        self.symmetry_base = CubicSetup.get_base_from_pose(pose)
-        self.has_extra_chains = self.cubicsetup.has_extra_chains(pose)
+        self.symmetrysetup = symmetrysetup
+        self.symmetry_type, self.symmetry_base, self.has_extra_chains = self.set_symmetry_info(pose)
         self.extra_chain_interaction_disallowed = extra_chain_interaction_disfavored
-        self.map_chains(pose)
+        self.map_chains()
         self.use_atoms_beyond_CB = use_atoms_beyond_CB
         self.chain_names_in_use = [pose.pdb_info().chain(pose.chain_end(i)) for i in self.chain_ids_in_use]
         self.core_atoms_str = ["CB", "N", "O", "CA", "C"]
@@ -139,10 +140,6 @@ class CloudContactScore:
         self.neighbour_anchorage = use_neighbour_anchorage
         self.neighbour_ss = use_neighbour_ss
         self.verbose = verbose
-        if self.neighbour_ss:
-            self.dssp = self._create_dssp(pose)
-        else:
-            self.dssp = None
         self.clash_penalty = clash_penalty
         self.use_hbonds = use_hbonds
         if self.use_hbonds:
@@ -154,7 +151,6 @@ class CloudContactScore:
         self.atom_selection = atom_selection
         self.clash_dist_str, self.clash_dist_int = self._create_default_clash_distances(pose, clash_dist=clash_dist, lj_overlap=lj_overlap)
         self.sym_ri_ai_map = self._select_atoms(pose, atom_selection)
-        self.symdef = cubicsetup
         self.connected_jumpdof_map = self._create_connectted_jumpdof_map(pose)
         self.point_clouds = self._get_point_clouds(pose)
         self.point_cloud_size = len(self.point_clouds[1])
@@ -182,27 +178,43 @@ class CloudContactScore:
         # straight after initialization
         self._internal_update(pose)
 
+    def clear_unpicklable_objects(self):
+        if self.use_hbonds:
+            self.hbond_score = None
+
     @staticmethod
-    def _create_dssp(pose):
+    def get_dssp(pose):
         return Vector1(Dssp(pose).get_dssp_secstruct())
 
-    def map_chains(self, pose):
-        """"""
+    def set_symmetry_info(self, pose):
+        """retrieve symmetry information on the type, base and if it consist of extra chains."""
+        symmetry_base, has_extra_chains = None, False
+        if isinstance(self.symmetrysetup, CubicSetup):
+            symmetry_type = CubicSetup.cubic_symmetry_from_pose(pose)
+            symmetry_base = CubicSetup.get_base_from_pose(pose)
+            has_extra_chains = self.symmetrysetup.has_extra_chains(pose)
+        else:
+            symmetry_type = self.symmetrysetup.get_symmetry_type()
+        return symmetry_type, symmetry_base, has_extra_chains
+
+    def map_chains(self):
+        """Sets which proteins chains are going to be modelled"""
         # this is the general setup if the base is HF
         if self.symmetry_type in ("I", "O"):
-            # if self.full_protection:
-            #     self.chain_ids_in_use = [1, 2, 3, 4, 5, 8, 7, 6, 9] # order?
-            #     self.hfs = {0: (2, 3, 4, 5), 1: (8,9), 2: (7, 6)}
-            #     # self.chains_full_1 = []
-            # else:
             self.chain_ids_in_use = [1, 2, 3, 8, 7, 6]
             self.hfs = {0: (2, 3), 1: (8,), 2: (7, 6)}
-        else:
-            assert self.symmetry_type == "T"
+        elif self.symmetry_type == "T":
             self.chain_ids_in_use = [1, 2, 4, 6, 5]
             self.hfs = {0: (2,), 1: (4,), 2: (6, 5)}
-        self.extra_chains = None
-        self.extra_chain_clash_dist = None
+        elif self.symmetry_type == "C":
+            actual_chains = int(self.symmetrysetup.headers.get("actual_chains"))
+            chains_represented = int(self.symmetrysetup.headers.get("chains_represented"))
+            if actual_chains != chains_represented:
+                self.chain_ids_in_use = list(range(1, chains_represented + 1))
+            else:
+                self.chain_ids_in_use = list(range(1, math.ceil(actual_chains / 2) + 1))
+            self.hfs = {0: tuple(i for i in self.chain_ids_in_use if i != 1)}
+        self.extra_chains, self.extra_chain_clash_dist = None, None
         if self.has_extra_chains:
             self.extra_chains = [10, 11, 12, 13, 14, 15, 16]
             if self.extra_chain_interaction_disallowed:
@@ -210,17 +222,19 @@ class CloudContactScore:
             self.chain_ids_in_use += self.extra_chains
             self.hfs[3] = self.extra_chains
 
-        # The following varies depending on which base we have. If the base is not HF, we have to change
-        # self.chain_ids_in_use and self.hfs
-        jid = self.cubicsetup.get_jumpidentifier()
-        self.jump_apply_order = [f'JUMP{jid}fold1', f'JUMP{jid}fold1_z', f'JUMP{jid}fold111', f'JUMP{jid}fold111_x', f'JUMP{jid}fold111_y', f'JUMP{jid}fold111_z']
-        if self.cubicsetup.get_base() != "HF":
-            chain_map = get_chain_map_as_dict(symmetry_type=self.symmetry_type, is_righthanded=self.cubicsetup.righthanded)
-            if self.has_extra_chains:
-                for c in self.extra_chains:
-                    chain_map[c] = {"3F": c, "2F": c}
-            self.chain_ids_in_use = [chain_map[c][self.symmetry_base] for c in self.chain_ids_in_use]
-            self.hfs = {k: tuple(chain_map[c][self.symmetry_base] for c in v) for k, v in self.hfs.items()}
+        if self.symmetry_type in ("I", "O", "T"):
+            # The following varies depending on which base we have. If the base is not HF, we have to change
+            jid = self.symmetrysetup.get_jumpidentifier()
+            self.jump_apply_order = [f'JUMP{jid}fold1', f'JUMP{jid}fold1_z', f'JUMP{jid}fold111', f'JUMP{jid}fold111_x', f'JUMP{jid}fold111_y', f'JUMP{jid}fold111_z']
+            if self.symmetrysetup.get_base() != "HF":
+                chain_map = get_chain_map_as_dict(symmetry_type=self.symmetry_type, is_righthanded=self.symmetrysetup.righthanded)
+                if self.has_extra_chains:
+                    for c in self.extra_chains:
+                        chain_map[c] = {"3F": c, "2F": c}
+                self.chain_ids_in_use = [chain_map[c][self.symmetry_base] for c in self.chain_ids_in_use]
+                self.hfs = {k: tuple(chain_map[c][self.symmetry_base] for c in v) for k, v in self.hfs.items()}
+        elif self.symmetry_type == "C":
+            self.jump_apply_order = ["JUMP1_x_t", "JUMP1_x_r", "JUMP1_y_r", "JUMP1_z_r"]
 
     # --- score functions, either total or individual ones --- #
 
@@ -230,6 +244,9 @@ class CloudContactScore:
         self._internal_update(pose)
         score = self.clash_score() + self.neighbour_score()
         if self.use_hbonds:
+            # for pickle reasons it is initialized here
+            if self.hbond_score is None:
+                self.hbond_score = self._create_hbonds_scores()
             score += self.hbond_score.score(pose)
         return score
 
@@ -425,12 +442,13 @@ class CloudContactScore:
         if self.verbose:
             print("creating coordination weigths")
         coordination_wts = []
+        dssp = self.get_dssp(pose) if self.neighbour_ss else None
         # 1. add weights according to the anchorage of each residue on its own chain and the secondary structure type it is from
         for ri, aii in self.sym_ri_ai_map[1].items():
             wt = 1.0
             if self.neighbour_anchorage:
                 wt *= min(1.0, self._calculate_neighbours(pose, ri) / 20.0)
-            if self.neighbour_ss and self.dssp[ri] == "L":
+            if self.neighbour_ss and dssp[ri] == "L":
                 wt /= 3.0
             for _ in aii:
                 coordination_wts.append(wt)
@@ -561,6 +579,37 @@ class CloudContactScore:
             radii_all[self.extra_chains_mask] = self.extra_chain_clash_dist
         return radii_all
 
+    @staticmethod
+    def find_surface_residues(sasa_calculate: SasaCalc, aspose, core_sasa_limit=20.0):
+        assert not is_symmetric(aspose), "pose should not be symmetrical"
+        # 1 find surface residues based on SASA
+        sasa_calculate.calculate(aspose)
+        per_residue_sasa = np.array(sasa_calculate.get_residue_sasa())
+        surface_residues_from_sasa = set(np.where(per_residue_sasa > core_sasa_limit)[0] + 1)
+        # print(f"sele sasa_surf_res, chain A and resi {'+'.join(map(str, surface_residues_from_sasa))}")
+        # print(f"sele diff_surf, chain A and resi {'+'.join(map(str, surface_residues_from_cone.difference(surface_residues_from_sasa)))}")
+
+        # 2 find surface residues based on CA->CB cone
+        srbl = SelectResiduesByLayer(False, False, True)
+        srbl.use_sidechain_neighbors(True)
+        srbl.sasa_core(5.2)
+        srbl.sasa_surface(2.0)
+        try:
+            surface_residues_from_cone = set(srbl.compute(aspose))
+        except RuntimeError as e:
+            # This produces the following error: /source/src/numeric/xyzVector.hh:654 Cannot create normalized xyzVector from vector of length() zero.
+            # I believe this is when you have a very small protein that does not have any core (I get it when i run pdbid: 7JRH)
+            # so in this case all atoms should actually be chosen
+            surface_residues_from_cone = surface_residues_from_sasa
+
+        # print(f"sele cone_surf_res, chain A and resi {'+'.join(map(str, surface_residues_from_cone))}")
+
+        # combine them:
+        all_surface_residues = set(surface_residues_from_sasa).union(set(surface_residues_from_cone))
+
+        return all_surface_residues
+
+
     # fixme call the the residues found "subset" as that is what I call it in the docs
     def _mark_surface_atoms(self, aspose, core_sasa_limit=20.0):
         """Marks only atoms on the surface.
@@ -595,30 +644,8 @@ class CloudContactScore:
 
         # 1 find surface residues based on SASA
         s = SasaCalc()
-        s.calculate(aspose)
-        per_residue_sasa = np.array(s.get_residue_sasa())
-        surface_residues_from_sasa = set(np.where(per_residue_sasa > core_sasa_limit)[0] + 1)
-        # print(f"sele sasa_surf_res, chain A and resi {'+'.join(map(str, surface_residues_from_sasa))}")
-        # print(f"sele diff_surf, chain A and resi {'+'.join(map(str, surface_residues_from_cone.difference(surface_residues_from_sasa)))}")
 
-
-        # 2 find surface residues based on CA->CB cone
-        srbl = SelectResiduesByLayer(False, False, True)
-        srbl.use_sidechain_neighbors(True)
-        srbl.sasa_core(5.2)
-        srbl.sasa_surface(2.0)
-        try:
-            surface_residues_from_cone = set(srbl.compute(aspose))
-        except RuntimeError as e:
-            # This produces the following error: /source/src/numeric/xyzVector.hh:654 Cannot create normalized xyzVector from vector of length() zero.
-            # I believe this is when you have a very small protein that does not have any core (I get it when i run pdbid: 7JRH)
-            # so in this case all atoms should actually be chosen
-            surface_residues_from_cone = surface_residues_from_sasa
-
-        # print(f"sele cone_surf_res, chain A and resi {'+'.join(map(str, surface_residues_from_cone))}")
-
-        # combine them:
-        all_surface_residues = set(surface_residues_from_sasa).union(set(surface_residues_from_cone))
+        all_surface_residues = self.find_surface_residues(s, aspose, core_sasa_limit)
 
         # print(f"sele core_res, chain A and resi {'+'.join(map(str, core_residues))}")
         # ModifyRepresentation(residues=all_surface_residues, unaffected="G").apply(aspose)

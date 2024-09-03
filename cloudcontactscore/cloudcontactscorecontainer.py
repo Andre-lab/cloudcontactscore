@@ -86,7 +86,7 @@ class CloudContactScoreContainer:
         """Constructs a CloudContactScore object based on the pose."""
         base = CubicSetup.get_base_from_pose(pose)
         cubicsetup = self.get_cubic_setup_from_base(base)
-        ccs = CloudContactScore(pose=pose, cubicsetup=cubicsetup,
+        ccs = CloudContactScore(pose=pose, symmetrysetup=cubicsetup,
                                 use_atoms_beyond_CB=False, use_neighbour_ss=False, **self.cloudcontactscore_param)
         return ccs
 

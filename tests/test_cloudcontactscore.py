@@ -6,8 +6,6 @@ Tests for CloudContactScore
 @Date: 12/6/21
 """
 
-
-
 def test_CloudContactScore_on_normalized():
     from cloudcontactscore.cloudcontactscore import CloudContactScore
     from simpletestlib.setup_test import setup_test
@@ -32,7 +30,7 @@ def test_CloudContactScore_on_normalized():
             set_jumpdof_str_str(pose, jump, dof, val)
         css = CloudContactScore(pose, cubicsetup=cs, atom_selection="surface", use_neighbour_ss=False, use_atoms_beyond_CB=False)
         # save poses so that i can look at them
-        identifier = f"{pdb}_{css.cubicsetup.get_base()}"
+        identifier = f"{pdb}_{css.symmetrysetup.get_base()}"
         out = f"/home/mads/projects/cubicsym/tests/outputs/cloudcontact_output_norm/{identifier}.pdb"
         pose.dump_pdb(out)
         out = f"/home/mads/projects/cubicsym/tests/outputs/cloudcontact_output_norm/{identifier}_cloud.pdb"
@@ -68,7 +66,7 @@ def test_CloudContactScore_on_all_fold_kinds():
             for pose, symdef in zip((pose_HF, pose_3F, pose_2F), (symdef_HF, "/tmp/3fold.symm", "/tmp/2fold.symm")):
                 css = CloudContactScore(pose, cubicsetup=symdef, atom_selection="surface", use_neighbour_ss=False, use_atoms_beyond_CB=False)
                 # save poses so that i can look at them
-                identifier = f"{file}_{css.cubicsetup.get_base()}"
+                identifier = f"{file}_{css.symmetrysetup.get_base()}"
                 out = f"/home/mads/projects/cubicsym/tests/outputs/cloudcontact_output/{identifier}.pdb"
                 pose.dump_pdb(out)
                 out = f"/home/mads/projects/cubicsym/tests/outputs/cloudcontact_output/{identifier}_cloud.pdb"
