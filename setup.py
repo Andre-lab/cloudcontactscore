@@ -16,7 +16,14 @@ setup(
     license='MIT',
     author='mads',
     author_email='mads.jeppesen@biochemistry.lu.se',
-    description='Fast score function for coarse grained protein docking'
+    description='Fast score function for coarse grained protein docking',
+    install_requires=[
+        "symmetryhandler @ git+https://github.com/Andre-lab/symmetryhandler@main",
+        "cubicsym @ git+https://github.com/Andre-lab/cubicsym@main",
+        "numpy",
+        "scipy",
+        "pyrosetta",
+    ],
     # FIXME: mpi could be an optional in the the future
     #	install_requires = []
 )
