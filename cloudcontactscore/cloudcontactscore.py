@@ -26,6 +26,7 @@ from symmetryhandler.symmetrysetup import SymmetrySetup
 from cubicsym.cubicsetup import CubicSetup
 from cubicsym.utilities import get_chain_map_as_dict
 from pyrosetta.rosetta.core.pose.symmetry import is_symmetric
+from scipy.spatial import KDTree
 
 class CloudContactScore:
     """Fast score function for fixed backbone coarse grained docking or design of cubic symmetrical proteins.
@@ -100,7 +101,7 @@ class CloudContactScore:
     def __init__(self, pose, symmetrysetup: SymmetrySetup, atom_selection="surface", clash_dist: dict = None, neighbour_dist=12, no_clash=1.2,
                  use_neighbour_anchorage=True, use_neighbour_ss=True, apply_symmetry_to_score=True, clash_penalty=100000, use_hbonds=True,
                  interaction_bonus: dict = None, lj_overlap=20, use_atoms_beyond_CB=False, verbose=False,
-                 extra_chain_interaction_disfavored=False):
+                 extra_chain_interaction_disfavored=False, chamfer_reference_file: str=None):
         """Initialization of a CloudContactScore object.
 
         :param pose: Pose to use for scoring. CloudContactScore will use the main/master subunit to create the internal point cloud.
@@ -123,6 +124,7 @@ class CloudContactScore:
         :param extra_chain_interaction_disfavored: If the interactions with extra chains (chain interactions outside the nearest
                5-, 3-, and 2-fold interaction) should be disallowed or not. Is only applicable if the supplied cubicsetup
                models extra chains.
+        :param: chamfer_reference_file: File containing point cloud information to be used for chamfer_distance calculations
         """
         self.symmetrysetup = symmetrysetup
         self.symmetry_type, self.symmetry_base, self.has_extra_chains = self.set_symmetry_info(pose)
@@ -141,6 +143,7 @@ class CloudContactScore:
         self.verbose = verbose
         self.clash_penalty = clash_penalty
         self.use_hbonds = use_hbonds
+        self.chamfer_reference_file = chamfer_reference_file
         if self.use_hbonds:
             self.hbond_score = self._create_hbonds_scores()
         else:
@@ -188,12 +191,10 @@ class CloudContactScore:
     def set_symmetry_info(self, pose):
         """retrieve symmetry information on the type, base and if it consist of extra chains."""
         symmetry_base, has_extra_chains = None, False
-        if isinstance(self.symmetrysetup, CubicSetup):
-            symmetry_type = CubicSetup.cubic_symmetry_from_pose(pose)
+        symmetry_type = self.symmetrysetup.get_symmetry_type()
+        if symmetry_type in ("I", "O", "T", "IC5", "IC3", "IC2"):
             symmetry_base = CubicSetup.get_base_from_pose(pose)
-            has_extra_chains = self.symmetrysetup.has_extra_chains(pose)
-        else:
-            symmetry_type = self.symmetrysetup.get_symmetry_type()
+            has_extra_chains = CubicSetup.has_extra_chains(pose)
         return symmetry_type, symmetry_base, has_extra_chains
 
     def map_chains(self):
@@ -202,6 +203,15 @@ class CloudContactScore:
         if self.symmetry_type in ("I", "O"):
             self.chain_ids_in_use = [1, 2, 3, 8, 7, 6]
             self.hfs = {0: (2, 3), 1: (8,), 2: (7, 6)}
+        elif self.symmetry_type == "IC5":
+            self.chain_ids_in_use = [1, 2, 3]
+            self.hfs = {0: (2, 3)}
+        elif self.symmetry_type == "IC3":
+            self.chain_ids_in_use = [1, 2]
+            self.hfs = {0: (2,)}
+        elif self.symmetry_type == "IC2":
+            self.chain_ids_in_use = [1, 2]
+            self.hfs = {0: (2,)}
         elif self.symmetry_type == "T":
             self.chain_ids_in_use = [1, 2, 4, 6, 5]
             self.hfs = {0: (2,), 1: (4,), 2: (6, 5)}
@@ -211,7 +221,12 @@ class CloudContactScore:
             if actual_chains != chains_represented:
                 self.chain_ids_in_use = list(range(1, chains_represented + 1))
             else:
-                self.chain_ids_in_use = list(range(1, math.ceil(actual_chains / 2) + 1))
+                if actual_chains in (2, 3):
+                    self.chain_ids_in_use = [1, 2]
+                elif actual_chains == 4:
+                    self.chain_ids_in_use = [1, 2, 3]
+                else:
+                    self.chain_ids_in_use = list(range(1, math.ceil(actual_chains / 2) + 1))
             self.hfs = {0: tuple(i for i in self.chain_ids_in_use if i != 1)}
         self.extra_chains, self.extra_chain_clash_dist = None, None
         if self.has_extra_chains:
@@ -221,7 +236,7 @@ class CloudContactScore:
             self.chain_ids_in_use += self.extra_chains
             self.hfs[3] = self.extra_chains
 
-        if self.symmetry_type in ("I", "O", "T"):
+        if self.symmetry_type in ("I", "O", "T", "IC5", "IC3", "IC2"):
             # The following varies depending on which base we have. If the base is not HF, we have to change
             jid = self.symmetrysetup.get_jumpidentifier()
             self.jump_apply_order = [f'JUMP{jid}fold1', f'JUMP{jid}fold1_z', f'JUMP{jid}fold111', f'JUMP{jid}fold111_x', f'JUMP{jid}fold111_y', f'JUMP{jid}fold111_z']
@@ -247,6 +262,29 @@ class CloudContactScore:
             if self.hbond_score is None:
                 self.hbond_score = self._create_hbonds_scores()
             score += self.hbond_score.score(pose)
+        return score
+
+    def normalize_point_cloud(self, point_cloud):
+        # center the pointcloud
+        centroid = np.mean(point_cloud, axis=0)
+        point_cloud -= centroid
+        # normalize the size with the distance furthest away
+        furthest_distance = np.max(np.sqrt(np.sum(point_cloud ** 2, axis=-1)))
+        point_cloud /= furthest_distance
+        return point_cloud
+
+    def chamfer_distance(self):
+        """Computes the chamfer distance between two sets of points A and B."""
+        tree = KDTree(B)
+        dist_A = tree.query(A)[0]
+        tree = KDTree(A)
+        dist_B = tree.query(B)[0]
+        return np.mean(dist_A) + np.mean(dist_B)
+
+    def point_cloud_comparison_score(self, path_A, path_B):
+        a = self.normalize_point_cloud(np.load(path_A))
+        b = self.normalize_point_cloud(np.load(path_B))
+        score = self.chamfer_distance(a, b)
         return score
 
     def breakdown_score(self, pose):
