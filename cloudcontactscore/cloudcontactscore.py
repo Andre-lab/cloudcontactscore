@@ -129,7 +129,7 @@ class CloudContactScore:
         self.symmetrysetup = symmetrysetup
         self.symmetry_type, self.symmetry_base, self.has_extra_chains = self.set_symmetry_info(pose)
         self.extra_chain_interaction_disallowed = extra_chain_interaction_disfavored
-        self.map_chains()
+        self.chain_ids_in_use, self.jump_apply_order = self.map_chains()
         self.use_atoms_beyond_CB = use_atoms_beyond_CB
         self.chain_names_in_use = [pose.pdb_info().chain(pose.chain_end(i)) for i in self.chain_ids_in_use]
         self.core_atoms_str = ["CB", "N", "O", "CA", "C"]
@@ -201,54 +201,56 @@ class CloudContactScore:
         """Sets which proteins chains are going to be modelled"""
         # this is the general setup if the base is HF
         if self.symmetry_type in ("I", "O"):
-            self.chain_ids_in_use = [1, 2, 3, 8, 7, 6]
+            chain_ids_in_use = [1, 2, 3, 8, 7, 6]
             self.hfs = {0: (2, 3), 1: (8,), 2: (7, 6)}
         elif self.symmetry_type == "IC5":
-            self.chain_ids_in_use = [1, 2, 3]
+            chain_ids_in_use = [1, 2, 3]
             self.hfs = {0: (2, 3)}
         elif self.symmetry_type == "IC3":
-            self.chain_ids_in_use = [1, 2]
+            chain_ids_in_use = [1, 2]
             self.hfs = {0: (2,)}
         elif self.symmetry_type == "IC2":
-            self.chain_ids_in_use = [1, 2]
+            chain_ids_in_use = [1, 2]
             self.hfs = {0: (2,)}
         elif self.symmetry_type == "T":
-            self.chain_ids_in_use = [1, 2, 4, 6, 5]
+            chain_ids_in_use = [1, 2, 4, 6, 5]
             self.hfs = {0: (2,), 1: (4,), 2: (6, 5)}
-        elif self.symmetry_type == "C":
+        elif self.symmetry_type[0] == "C":
             actual_chains = int(self.symmetrysetup.headers.get("actual_chains"))
             chains_represented = int(self.symmetrysetup.headers.get("chains_represented"))
             if actual_chains != chains_represented:
-                self.chain_ids_in_use = list(range(1, chains_represented + 1))
+                chain_ids_in_use = list(range(1, chains_represented + 1))
             else:
                 if actual_chains in (2, 3):
-                    self.chain_ids_in_use = [1, 2]
+                    chain_ids_in_use = [1, 2]
                 elif actual_chains == 4:
-                    self.chain_ids_in_use = [1, 2, 3]
+                    chain_ids_in_use = [1, 2, 3]
                 else:
-                    self.chain_ids_in_use = list(range(1, math.ceil(actual_chains / 2) + 1))
-            self.hfs = {0: tuple(i for i in self.chain_ids_in_use if i != 1)}
+                    chain_ids_in_use = list(range(1, math.ceil(actual_chains / 2) + 1))
+            self.hfs = {0: tuple(i for i in chain_ids_in_use if i != 1)}
         self.extra_chains, self.extra_chain_clash_dist = None, None
         if self.has_extra_chains:
             self.extra_chains = [10, 11, 12, 13, 14, 15, 16]
             if self.extra_chain_interaction_disallowed:
                 self.extra_chain_clash_dist = 10
-            self.chain_ids_in_use += self.extra_chains
+            chain_ids_in_use += self.extra_chains
             self.hfs[3] = self.extra_chains
 
         if self.symmetry_type in ("I", "O", "T", "IC5", "IC3", "IC2"):
             # The following varies depending on which base we have. If the base is not HF, we have to change
             jid = self.symmetrysetup.get_jumpidentifier()
-            self.jump_apply_order = [f'JUMP{jid}fold1', f'JUMP{jid}fold1_z', f'JUMP{jid}fold111', f'JUMP{jid}fold111_x', f'JUMP{jid}fold111_y', f'JUMP{jid}fold111_z']
+            jump_apply_order = [f'JUMP{jid}fold1', f'JUMP{jid}fold1_z', f'JUMP{jid}fold111', f'JUMP{jid}fold111_x', f'JUMP{jid}fold111_y', f'JUMP{jid}fold111_z']
             if self.symmetrysetup.get_base() != "HF":
                 chain_map = get_chain_map_as_dict(symmetry_type=self.symmetry_type, is_righthanded=self.symmetrysetup.righthanded)
                 if self.has_extra_chains:
                     for c in self.extra_chains:
                         chain_map[c] = {"3F": c, "2F": c}
-                self.chain_ids_in_use = [chain_map[c][self.symmetry_base] for c in self.chain_ids_in_use]
+                chain_ids_in_use = [chain_map[c][self.symmetry_base] for c in chain_ids_in_use]
                 self.hfs = {k: tuple(chain_map[c][self.symmetry_base] for c in v) for k, v in self.hfs.items()}
-        elif self.symmetry_type == "C":
-            self.jump_apply_order = ["JUMP1_x_t", "JUMP1_x_r", "JUMP1_y_r", "JUMP1_z_r"]
+        elif self.symmetry_type[0] == "C":
+            jump_apply_order = ["JUMP1_x_t", "JUMP1_x_r", "JUMP1_y_r", "JUMP1_z_r"]
+            
+        return chain_ids_in_use, jump_apply_order
 
     # --- score functions, either total or individual ones --- #
 
